@@ -107,7 +107,44 @@ def _find_quoted(text: str) -> str:
     return best
 
 
-def extract_movie_title(headline: str, summary: str = "") -> str:
+def _normalize_title_from_url(url: str) -> str | None:
+    try:
+        from urllib.parse import urlparse
+
+        p = urlparse(url)
+        host = (p.netloc or "").lower()
+        segs = [s for s in (p.path or "").split("/") if s]
+        if not segs:
+            return None
+        slug = segs[-1]
+        # Guardian pattern: .../<year>/<mon>/<day>/<slug>
+        # or .../film/<yyyy>/<mm>/<dd>/<slug>
+        if "theguardian.com" in host:
+            # If last seg is numeric (date), take the previous
+            if re.fullmatch(r"\d{4}|\d{2}", slug):
+                slug = segs[-2] if len(segs) >= 2 else slug
+            # Drop common suffix starting at -review
+            slug = re.sub(r"-review(?:-.+)?$", "", slug, flags=re.I)
+        else:
+            # Generic cleanup: drop trailing -review and file extensions
+            slug = re.sub(r"\.(html?|php|asp|aspx)$", "", slug, flags=re.I)
+            slug = re.sub(r"-review(?:-.+)?$", "", slug, flags=re.I)
+
+        # Replace separators, remove leftover dashes/underscores
+        title = re.sub(r"[-_]+", " ", slug).strip()
+        # If too short or empty, try previous segment
+        if len(title) < 2 and len(segs) >= 2:
+            title = re.sub(r"[-_]+", " ", segs[-2]).strip()
+        # Capitalize words heuristically
+        if title:
+            # Keep original casing mostly; rely on downstream for formatting
+            return title
+        return None
+    except Exception:
+        return None
+
+
+def extract_movie_title(headline: str, summary: str = "", link: str | None = None) -> str:
     """Best-effort extraction of a movie title from a headline/snippet.
 
     Heuristics:
@@ -118,23 +155,16 @@ def extract_movie_title(headline: str, summary: str = "") -> str:
     - Final fallback: first ~8 words of the headline.
     """
     text = headline.strip()
-    # Guard: if headline is a URL-like string, try to recover a title-ish phrase from the URL
-    if re.match(r"https?://", text, flags=re.I):
-        try:
-            from urllib.parse import urlparse
-
-            p = urlparse(text)
-            segs = [s for s in (p.path or "").split("/") if s]
-            if segs:
-                last = segs[-1]
-                # Strip extensions and hyphenated suffixes like "-review"
-                last = re.sub(r"\.(html?|php|asp|aspx)$", "", last, flags=re.I)
-                last = re.sub(r"-review.*$", "", last, flags=re.I)
-                candidate = re.sub(r"[-_]+", " ", last).strip()
-                if len(candidate.split()) >= 2:
-                    text = candidate
-        except Exception:
-            pass
+    # Prefer explicit Guardian-style normalization from URL if provided
+    if link:
+        norm = _normalize_title_from_url(link)
+        if norm:
+            text = norm
+    # Fallback: if headline is a URL, try to recover title from it
+    elif re.match(r"https?://", text, flags=re.I):
+        norm = _normalize_title_from_url(text)
+        if norm:
+            text = norm
     quoted = _find_quoted(text) or _find_quoted(summary)
     if quoted:
         return re.sub(r"\s+", " ", quoted).strip()
@@ -291,7 +321,6 @@ def handle_telegram_commands(
         chat = msg.get("chat") or {}
         chat_id = str(chat.get("id"))
 
-        # Normalize command
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
         base_cmds = ["/status", "/movies", "/backfill"]
@@ -475,7 +504,7 @@ def main() -> None:
                 continue
 
             # Determine movie title
-            movie = extract_movie_title(headline, it.summary)
+            movie = extract_movie_title(headline, it.summary, it.link)
 
             # Try to resolve and cache release date for new movies (best-effort)
             try:
