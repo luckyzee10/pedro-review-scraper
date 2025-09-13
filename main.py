@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 from scraper import FEEDS, fetch_all, ScrapedItem
 from sentiment import classify_sentiment
 from telegram import send_telegram_message, fetch_updates, get_me, delete_webhook
+from movie_meta import ensure_release_date, ensure_tables as ensure_movie_tables
 
 
 DB_PATH = os.getenv("REVIEW_DB_PATH", "reviews.db")
@@ -67,6 +68,11 @@ def init_db(path: str = DB_PATH) -> sqlite3.Connection:
         )
         """
     )
+    # Ensure movie metadata table exists
+    try:
+        ensure_movie_tables(conn)
+    except Exception:
+        pass
     conn.commit()
     return conn
 
@@ -247,14 +253,51 @@ def handle_telegram_commands(
         chat_id = str(chat.get("id"))
 
         # Normalize command
-        tlow = text.lower()
-        candidates = ["/status", "/movies"]
+        # Basic parsing for command + optional argument
+        tlow = text.strip().lower()
+        base_cmds = ["/status", "/movies"]
+        bot_cmds = []
         if bot_username:
-            candidates.extend([f"/status@{bot_username.lower()}", f"/movies@{bot_username.lower()}"])
-        if tlow not in candidates:
+            bot_cmds = [f"/status@{bot_username.lower()}", f"/movies@{bot_username.lower()}"]
+        all_cmds = base_cmds + bot_cmds
+
+        # Identify which command is used and extract argument (movie name) if provided
+        used_cmd = None
+        for c in all_cmds:
+            if tlow.startswith(c):
+                used_cmd = c
+                break
+        if not used_cmd:
             continue
 
-        # Build stats
+        arg = text[len(used_cmd):].strip()
+        if arg:
+            # Single-movie status
+            row = conn.execute(
+                """
+                SELECT movie,
+                       SUM(CASE WHEN sentiment='Positive' THEN 1 ELSE 0 END) AS pos,
+                       SUM(CASE WHEN sentiment='Negative' THEN 1 ELSE 0 END) AS neg,
+                       SUM(CASE WHEN sentiment='Neutral' THEN 1 ELSE 0 END)  AS neu,
+                       COUNT(*) AS total
+                FROM reviews
+                WHERE LOWER(movie) LIKE LOWER(?)
+                GROUP BY movie
+                ORDER BY total DESC
+                LIMIT 1
+                """,
+                (f"%{arg}%",),
+            ).fetchone()
+
+            if not row:
+                send_telegram_message(token, chat_id, f"No results for '{arg}'. Try a different title.")
+            else:
+                movie, pos, neg, neu, total = row
+                msg = "📊 Movie Status\n" + _format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0))
+                send_telegram_message(token, chat_id, msg)
+            continue
+
+        # General summary ordered by release date proximity
         rows = conn.execute(
             """
             SELECT movie,
@@ -264,8 +307,7 @@ def handle_telegram_commands(
                    COUNT(*) AS total
             FROM reviews
             GROUP BY movie
-            ORDER BY total DESC, movie ASC
-            LIMIT 100
+            LIMIT 300
             """
         ).fetchall()
 
@@ -273,10 +315,34 @@ def handle_telegram_commands(
             send_telegram_message(token, chat_id, "No reviews yet. Check back soon!")
             continue
 
-        lines: list[str] = ["📊 Movies Summary (Top 100):"]
-        for movie, pos, neg, neu, total in rows:
+        # Attach release dates if known
+        rel_map = {m: (conn.execute("SELECT release_date FROM movies WHERE movie=?", (m,)).fetchone() or [None])[0] for (m, *_rest) in rows}
+
+        # Sort by proximity to future release date: future soonest first, then unknown, then past
+        from datetime import date
+
+        def sort_key(item):
+            m, pos, neg, neu, total = item
+            rd = rel_map.get(m)
+            try:
+                if rd:
+                    y, mo, d = map(int, rd.split("-"))
+                    rdate = date(y, mo, d)
+                    today = date.today()
+                    if rdate >= today:
+                        return (0, (rdate - today).days, m.lower())
+                    else:
+                        return (2, (today - rdate).days, m.lower())
+                else:
+                    return (1, 99999, m.lower())
+            except Exception:
+                return (1, 99999, m.lower())
+
+        rows_sorted = sorted(rows, key=sort_key)
+
+        lines: list[str] = ["📊 Movies Summary (by upcoming releases):"]
+        for movie, pos, neg, neu, total in rows_sorted[:100]:
             lines.append(_format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0)))
-        # Send possibly in multiple messages
         _send_batched_message(token, chat_id, lines)
 
     if last_update_id is not None:
@@ -289,6 +355,7 @@ def main() -> None:
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    tmdb_api_key = os.getenv("TMDB_API_KEY", "").strip()
 
     if not telegram_token or not telegram_chat_id:
         print("[!] TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set.")
@@ -331,6 +398,13 @@ def main() -> None:
 
             # Determine movie title
             movie = extract_movie_title(headline, it.summary)
+
+            # Try to resolve and cache release date for new movies (best-effort)
+            try:
+                if tmdb_api_key:
+                    ensure_release_date(conn, movie, tmdb_api_key)
+            except Exception:
+                pass
 
             # Run sentiment classification
             text_for_model = f"{headline}\n\n{it.summary}".strip()

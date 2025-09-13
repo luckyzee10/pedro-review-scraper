@@ -11,6 +11,7 @@ Environment variables
 - OPENAI_API_KEY
 - TELEGRAM_BOT_TOKEN
 - TELEGRAM_CHAT_ID
+- TMDB_API_KEY (optional, enables movie release date lookups for better sorting)
 - REVIEW_DB_PATH (optional, defaults to reviews.db; use /data/reviews.db in containers)
 
 Quick local run
@@ -25,6 +26,7 @@ Render gives you a “worker” with a persistent disk in a few clicks.
 2) Create a new Render Blueprint from this repo (render.yaml provided).
 3) When prompted, set environment variables:
    - OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+   - Optional: TMDB_API_KEY for release date lookups
    - REVIEW_DB_PATH is pre-set by the blueprint to /data/reviews.db
 4) Deploy. The worker will start polling and persist the SQLite DB on the mounted disk.
 
@@ -84,5 +86,5 @@ Notes
 - Freshness: Neutral reviews are excluded from the percentage denominator; shows N/A until at least one Positive or Negative exists.
  - Minimum reviews for percentage: requires at least 3 (Positive+Negative) reviews to show a percentage; configure with `MIN_REVIEWS_FOR_PERCENT`.
 
-Learn more
+ Learn more
 - See docs/HOW_IT_WORKS.md for a concise overview of architecture, data flow, configuration, and operations.

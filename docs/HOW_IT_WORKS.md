@@ -143,7 +143,11 @@ Telegram Delivery
 
 Telegram Commands (Status Summary)
 - What it does
-  - When someone sends `/status` or `/movies`, the bot replies in that chat with a summary of up to 100 movies (highest total reviews first), including counts and a Tomatometer‑like percentage.
+  - When someone sends `/status` or `/movies`, the bot replies with a summary of up to 100 movies, sorted by proximity to future release dates (soonest upcoming first), then unknown dates, then past releases. Each line shows counts and a Tomatometer‑like percentage.
+  - `
+    /status <movie name>
+    /movies <movie name>
+    ` returns a single movie’s stats (best match by title).
 - How it works
   - The worker checks Telegram `getUpdates` between feed polling cycles.
   - It stores an offset in SQLite table `kv` (key `tg_offset`) to avoid reprocessing the same updates.
@@ -154,3 +158,12 @@ Telegram Commands (Status Summary)
 - Batching
   - Telegram messages are limited to ~4096 chars; the bot splits long summaries into multiple messages.
   - If there are no reviews yet, it replies: `No reviews yet. Check back soon!`
+
+Release Dates & Sorting
+- Where release dates come from
+  - The app attempts to look up release dates via TMDb when a new movie title appears and caches the result in SQLite table `movies`.
+  - Set `TMDB_API_KEY` to enable lookups. Without it, release dates remain unknown and summaries fall back to a generic order.
+- Sorting rule for summaries
+  - Future releases (today or later): ordered from soonest → farthest.
+  - Unknown release date: shown after all known future releases.
+  - Past releases: shown last.
