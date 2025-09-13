@@ -414,7 +414,7 @@ def handle_telegram_commands(
                 send_telegram_message(
                     token,
                     chat_id,
-                    f"No market-matched titles yet. Sources: {breakdown}",
+                    f"No market-matched titles yet. Sources: {breakdown}. Try /refreshmarkets.",
                 )
                 continue
             # De-dup by title preferring polymarket label if both exist

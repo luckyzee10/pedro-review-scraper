@@ -111,6 +111,39 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
             mv = _guess_movie_from_text(q)
             if mv:
                 titles.append((_slugify(mv), mv))
+        # Additionally, perform explicit search queries to catch filtered results
+        try:
+            seen = set(slug for slug, _ in titles)
+            search_terms = ("rotten tomatoes", "tomatometer", "rt score")
+            for term in search_terms:
+                r = requests.get(
+                    "https://gamma-api.polymarket.com/markets",
+                    params={"limit": 1000, "closed": "false", "search": term},
+                    timeout=timeout,
+                )
+                if not r.ok:
+                    continue
+                d2 = r.json() or {}
+                ms2 = d2.get("markets") or d2.get("data") or []
+                if isinstance(ms2, dict):
+                    ms2 = ms2.get("markets", []) or []
+                for m2 in ms2 or []:
+                    q2 = str(m2.get("question") or m2.get("title") or m2.get("name") or m2.get("condition") or "")
+                    closed2 = m2.get("closed")
+                    status2 = str(m2.get("status") or "").lower()
+                    if closed2 or status2 in {"closed", "resolved", "settled"}:
+                        continue
+                    hay2 = q2.lower()
+                    if not any(k in hay2 for k in cues):
+                        continue
+                    mv2 = _guess_movie_from_text(q2)
+                    if mv2:
+                        s2 = _slugify(mv2)
+                        if s2 not in seen:
+                            titles.append((s2, mv2))
+                            seen.add(s2)
+        except Exception:
+            pass
     except Exception:
         return titles
     return titles
@@ -131,7 +164,7 @@ def fetch_kalshi_titles_public(timeout: int = 15) -> List[Tuple[str, str]]:
         data = None
         for url in candidates:
             try:
-                resp = requests.get(url, timeout=timeout)
+                resp = requests.get(url, params={"limit": 1000}, timeout=timeout)
                 if resp.ok:
                     data = resp.json() or {}
                     break
@@ -147,7 +180,7 @@ def fetch_kalshi_titles_public(timeout: int = 15) -> List[Tuple[str, str]]:
             status = str(m.get("status") or "").lower()
             if status in {"closed", "settled", "resolved"}:
                 continue
-            hay = title.lower()
+            hay = (title or "").lower() + " " + str(m.get("description") or "").lower()
             if not any(k in hay for k in ("rotten tomatoes", "tomatometer", "rt score", "rt %", "tomatoes", " rt ")):
                 continue
             mv = _guess_movie_from_text(title)
