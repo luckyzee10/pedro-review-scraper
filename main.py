@@ -248,6 +248,7 @@ def handle_telegram_commands(
     conn: sqlite3.Connection,
     token: str,
     bot_username: str | None,
+    tmdb_api_key: str | None = None,
 ) -> None:
     # Offset for getUpdates
     off_s = _kv_get(conn, "tg_offset")
@@ -310,8 +311,14 @@ def handle_telegram_commands(
                 send_telegram_message(token, chat_id, f"No results for ‘{arg_h}’. Try a different title.", parse_mode="HTML")
             else:
                 movie, pos, neg, neu, total = row
-                # Fetch release date if cached
-                rel = (conn.execute("SELECT release_date FROM movies WHERE movie=?", (movie,)).fetchone() or [None])[0]
+                # Ensure/fetch release date (cached)
+                rel = None
+                try:
+                    rel = ensure_release_date(conn, str(movie), tmdb_api_key) if tmdb_api_key else (
+                        (conn.execute("SELECT release_date FROM movies WHERE movie=?", (movie,)).fetchone() or [None])[0]
+                    )
+                except Exception:
+                    rel = (conn.execute("SELECT release_date FROM movies WHERE movie=?", (movie,)).fetchone() or [None])[0]
                 msg = "📊 <b>Movie Status</b>\n" + _format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0), rel)
                 send_telegram_message(token, chat_id, msg, parse_mode="HTML")
             continue
@@ -334,8 +341,17 @@ def handle_telegram_commands(
             send_telegram_message(token, chat_id, "No reviews yet. Check back soon!")
             continue
 
-        # Attach release dates if known
-        rel_map = {m: (conn.execute("SELECT release_date FROM movies WHERE movie=?", (m,)).fetchone() or [None])[0] for (m, *_rest) in rows}
+        # Ensure and attach release dates (best-effort, cached)
+        rel_map = {}
+        for m, *_rest in rows:
+            rel = None
+            try:
+                rel = ensure_release_date(conn, str(m), tmdb_api_key) if tmdb_api_key else None
+            except Exception:
+                rel = None
+            if not rel:
+                rel = (conn.execute("SELECT release_date FROM movies WHERE movie=?", (m,)).fetchone() or [None])[0]
+            rel_map[m] = rel
 
         # Sort by proximity to future release date: future soonest first, then unknown, then past
         from datetime import date
