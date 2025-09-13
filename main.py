@@ -385,6 +385,7 @@ def handle_telegram_commands(
             "/movies",
             "/catalog",
             "/markets",
+            "/addmarketurl",
             "/refreshmarkets",
             "/backfill",
             "/normalize",
