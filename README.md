@@ -13,7 +13,6 @@ Environment variables
 - TELEGRAM_CHAT_ID
 - TMDB_API_KEY (optional, enables movie release date lookups for better sorting)
 - REVIEW_DB_PATH (optional, defaults to reviews.db; use /data/reviews.db in containers)
- - STRICT_URL_REVIEW (optional, default off). If set to 1/true, only process items whose URL contains "review".
 
 Quick local run
 1) Python 3.11, then: pip install -r requirements.txt
@@ -86,7 +85,7 @@ Notes
 - Movie title extraction is heuristic; tune in main.extract_movie_title if needed.
 - Freshness: Neutral reviews are excluded from the percentage denominator; shows N/A until at least one Positive or Negative exists.
  - Minimum reviews for percentage: requires at least 3 (Positive+Negative) reviews to show a percentage; configure with `MIN_REVIEWS_FOR_PERCENT`.
- - Filtering: set `STRICT_URL_REVIEW=1` to drop items whose URL does not include the word "review" (may miss valid reviews from some outlets that don’t include “review” in URLs).
+ - Filtering: the scraper only accepts items that look like reviews based on cues in the title/URL such as “review”, “critic review”, “film review”, “our take on”, “verdict”, or star ratings (★ / “3 stars”).
 
  Learn more
 - See docs/HOW_IT_WORKS.md for a concise overview of architecture, data flow, configuration, and operations.

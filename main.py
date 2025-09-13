@@ -107,6 +107,10 @@ def _find_quoted(text: str) -> str:
     return best
 
 
+def _smart_titlecase(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip().title()
+
+
 def _normalize_title_from_url(url: str) -> str | None:
     try:
         from urllib.parse import urlparse
@@ -135,10 +139,9 @@ def _normalize_title_from_url(url: str) -> str | None:
         # If too short or empty, try previous segment
         if len(title) < 2 and len(segs) >= 2:
             title = re.sub(r"[-_]+", " ", segs[-2]).strip()
-        # Capitalize words heuristically
+        # Capitalize words
         if title:
-            # Keep original casing mostly; rely on downstream for formatting
-            return title
+            return _smart_titlecase(title)
         return None
     except Exception:
         return None
@@ -167,7 +170,7 @@ def extract_movie_title(headline: str, summary: str = "", link: str | None = Non
             text = norm
     quoted = _find_quoted(text) or _find_quoted(summary)
     if quoted:
-        return re.sub(r"\s+", " ", quoted).strip()
+        return _smart_titlecase(re.sub(r"\s+", " ", quoted).strip())
 
     low = text.lower()
     if "review:" in low:
@@ -175,11 +178,11 @@ def extract_movie_title(headline: str, summary: str = "", link: str | None = Non
         after = text.split(":", 1)[1]
         cleaned = re.sub(r"\b(film|movie)\s+review\b:?\s*", "", after, flags=re.I).strip()
         cleaned = re.sub(r"\breview\b:?\s*", "", cleaned, flags=re.I).strip()
-        return cleaned or text
+        return _smart_titlecase(cleaned or text)
 
     if low.endswith(" review"):
         before = re.sub(r"\breview\b$", "", text, flags=re.I).strip(" -:|\u2013")
-        return before or text
+        return _smart_titlecase(before or text)
 
     # Common separators
     for sep in (" — ", " – ", " - ", ": "):
@@ -187,8 +190,8 @@ def extract_movie_title(headline: str, summary: str = "", link: str | None = Non
             left, right = text.split(sep, 1)
             # If the left looks like a prefix (contains 'review'), take the right side
             if "review" in left.lower():
-                return right.strip()
-            return left.strip()
+                return _smart_titlecase(right.strip())
+            return _smart_titlecase(left.strip())
 
     # Cleanup common decorations
     text = re.sub(r"\breview\b", "", text, flags=re.I)
@@ -197,7 +200,7 @@ def extract_movie_title(headline: str, summary: str = "", link: str | None = Non
 
     # Fallback: first 8 words
     words = text.split()
-    return " ".join(words[:8]).strip()
+    return _smart_titlecase(" ".join(words[:8]).strip())
 
 
 def row_exists(conn: sqlite3.Connection, outlet: str, headline: str) -> bool:

@@ -50,21 +50,41 @@ def _guess_outlet(feed: Dict[str, Any], feed_url: str) -> str:
 
 
 def _is_review_candidate(title: str, summary: str, link: str) -> bool:
-    """Heuristic to decide if an entry is a movie review.
+    """Decide if an entry is a review worth processing.
 
-    We check for the keyword 'review' and some film-related hints in either
-    the title or summary to reduce noise from general entertainment posts.
+    Permanent cues (case-insensitive) in title/summary/URL required:
+    - "review", "critic review", "film review", "our take on", "verdict"
+    - a star cue: the unicode star "★" or patterns like "3 stars", "4 star"
     """
-    text = f"{title} {summary}".lower()
-    if "review" not in text:
-        return False
-    hints = ("film", "movie", "cinema", "screen", "feature")
-    # Optional stricter filter: require 'review' in the URL itself
-    strict_url = os.getenv("STRICT_URL_REVIEW", "").strip().lower() in {"1", "true", "yes", "on"}
-    if strict_url and link:
-        if "review" not in link.lower():
-            return False
-    return any(h in text for h in hints) or True  # allow generic 'review' when unsure
+    title_l = (title or "").lower()
+    summary_l = (summary or "").lower()
+    link_l = (link or "").lower()
+    hay = f"{title_l} {summary_l} {link_l}"
+
+    phrase_cues = [
+        "review",
+        "critic review",
+        "film review",
+        "our take on",
+        "verdict",
+        "stars",  # e.g., "3 stars" or "four stars"
+    ]
+
+    # Fast path: unicode star anywhere
+    if "★" in (title or "") or "★" in (summary or ""):
+        return True
+
+    # Numeric star rating like "3 stars" or "4 star"
+    import re as _re
+
+    if _re.search(r"\b[1-5]\s*star(s)?\b", hay):
+        return True
+
+    # Any phrase cue present
+    if any(cue in hay for cue in phrase_cues):
+        return True
+
+    return False
 
 
 def fetch_feed(feed_url: str) -> List[ScrapedItem]:
