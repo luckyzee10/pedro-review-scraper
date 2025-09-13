@@ -390,7 +390,32 @@ def handle_telegram_commands(
                 q = arg.strip().lower()
                 items = [(t, s) for (t, s) in items if q in t.lower()]
             if not items:
-                send_telegram_message(token, chat_id, "No market-matched titles yet.")
+                # Attempt on-demand refresh when empty
+                try:
+                    n = refresh_market_titles(
+                        conn,
+                        os.getenv("KALSHI_API_KEY", "").strip(),
+                        os.getenv("KALSHI_API_SECRET", "").strip(),
+                        os.getenv("TMDB_API_KEY", "").strip(),
+                    )
+                    markets = load_market_index(conn)
+                    items = [(title, src) for (_slug, (title, src)) in markets.items()]
+                except Exception:
+                    items = []
+            if not items:
+                # Provide debug counts by source to help diagnose
+                try:
+                    rows = conn.execute(
+                        "SELECT source, COUNT(*) FROM market_titles GROUP BY source"
+                    ).fetchall()
+                    breakdown = ", ".join(f"{s}:{c}" for s, c in rows) or "none"
+                except Exception:
+                    breakdown = "unknown"
+                send_telegram_message(
+                    token,
+                    chat_id,
+                    f"No market-matched titles yet. Sources: {breakdown}",
+                )
                 continue
             # De-dup by title preferring polymarket label if both exist
             best = {}
