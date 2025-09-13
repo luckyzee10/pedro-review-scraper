@@ -323,13 +323,14 @@ def handle_telegram_commands(
 
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
-        base_cmds = ["/status", "/movies", "/backfill"]
+        base_cmds = ["/status", "/movies", "/backfill", "/normalize"]
         bot_cmds = []
         if bot_username:
             bot_cmds = [
                 f"/status@{bot_username.lower()}",
                 f"/movies@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
+                f"/normalize@{bot_username.lower()}",
             ]
         all_cmds = base_cmds + bot_cmds
 
@@ -358,6 +359,46 @@ def handle_telegram_commands(
                 except Exception:
                     pass
             send_telegram_message(token, chat_id, f"Backfill complete. Updated {updated} titles.")
+            continue
+
+        # Normalize existing URL-like movie titles (Guardian-specific by default)
+        if used_cmd.startswith("/normalize"):
+            scope = arg.strip().lower() if arg else "guardian"
+            where = "movie LIKE 'http%'"
+            if scope == "guardian":
+                where += " AND movie LIKE '%theguardian.com%'"
+
+            rows = conn.execute(f"SELECT DISTINCT movie FROM reviews WHERE {where}").fetchall()
+            total_rows_updated = 0
+            titles_changed = 0
+            preview = []
+            for (old_movie,) in rows:
+                new_title = _normalize_title_from_url(str(old_movie))
+                if new_title and new_title != old_movie:
+                    # Update all rows with this movie value
+                    cur = conn.execute(
+                        "UPDATE reviews SET movie=? WHERE movie=?",
+                        (new_title, old_movie),
+                    )
+                    conn.commit()
+                    changed = cur.rowcount or 0
+                    total_rows_updated += changed
+                    titles_changed += 1
+                    if len(preview) < 10:
+                        preview.append(f"• {old_movie} → {new_title}")
+                    # Ensure release date for the normalized title
+                    try:
+                        if tmdb_api_key:
+                            ensure_release_date(conn, new_title, tmdb_api_key)
+                    except Exception:
+                        pass
+
+            msg_lines = [
+                f"Normalization complete. Titles changed: {titles_changed}; rows updated: {total_rows_updated}.",
+            ]
+            if preview:
+                msg_lines.append("Examples:\n" + "\n".join(_html_escape(x) for x in preview))
+            send_telegram_message(token, chat_id, "\n".join(msg_lines), parse_mode="HTML")
             continue
         if arg:
             # Single-movie status

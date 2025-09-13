@@ -160,6 +160,13 @@ Telegram Commands (Status Summary)
   - Telegram messages are limited to ~4096 chars; the bot splits long summaries into multiple messages.
   - If there are no reviews yet, it replies: `No reviews yet. Check back soon!`
 
+Data Hygiene Commands
+- `/backfill`
+  - Populates missing release dates for all known movies via TMDb (if `TMDB_API_KEY` is set). Safe to run repeatedly.
+- `/normalize` or `/normalize guardian`
+  - Rewrites stored movie titles that are raw URLs into cleaner titles, with Guardian-specific handling for slugs like `…/movie-name-review-…`.
+  - `/normalize all` will attempt URL-based normalization for all domains, not just Guardian.
+
 Release Dates & Sorting
 - Where release dates come from
   - The app attempts to look up release dates via TMDb when a new movie title appears and caches the result in SQLite table `movies`.
