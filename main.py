@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 import requests
 
 from scraper import FEEDS, fetch_all, ScrapedItem
-from sentiment import classify_sentiment
+from sentiment import classify_sentiment, extract_market_title
 from telegram import send_telegram_message, fetch_updates, get_me, delete_webhook
 from movie_meta import (
     ensure_release_date,
@@ -274,6 +274,31 @@ def _slugify_title(value: str) -> str:
     return v
 
 
+def _infer_title_from_url(url: str, openai_api_key: str | None) -> str | None:
+    try:
+        from urllib.parse import urlparse
+
+        p = urlparse(url)
+        segs = [s for s in (p.path or "").split("/") if s]
+        # Combine last 2 segments as context if present
+        context = " ".join(segs[-2:]) if segs else url
+        # Prefer LLM extraction
+        title = extract_market_title(f"URL: {url}\nContext: {context}", api_key=openai_api_key)
+        if title:
+            return title
+        # Fallback: clean typical RT suffixes
+        last = segs[-1] if segs else url
+        last = re.sub(r"-rotten-?tomatoes-?score.*$", "", last, flags=re.I)
+        last = re.sub(r"rt-?score.*$", "", last, flags=re.I)
+        last = re.sub(r"^rt-", "", last, flags=re.I)
+        last = re.sub(r"[-_]+", " ", last).strip()
+        if last:
+            return _smart_titlecase(last)
+        return None
+    except Exception:
+        return None
+
+
 def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
@@ -375,6 +400,7 @@ def handle_telegram_commands(
                 f"/catalog@{bot_username.lower()}",
                 f"/markets@{bot_username.lower()}",
                 f"/refreshmarkets@{bot_username.lower()}",
+                f"/addmarketurl@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -994,3 +1020,42 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+        # Manually seed market titles via URLs (space/newline separated)
+        if used_cmd.startswith("/addmarketurl"):
+            urls = [u for u in re.split(r"\s+", arg) if u.startswith("http")]
+            if not urls:
+                send_telegram_message(token, chat_id, "Usage: /addmarketurl <url1> <url2> ...")
+                continue
+            added = 0
+            examples = []
+            for u in urls:
+                title = _infer_title_from_url(u, os.getenv("OPENAI_API_KEY", "").strip())
+                if not title:
+                    continue
+                slug = _slugify_title(title)
+                try:
+                    ts = datetime.now(timezone.utc).isoformat()
+                    conn.execute(
+                        "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(slug) DO UPDATE SET title=excluded.title, source=excluded.source, updated_at=excluded.updated_at",
+                        (slug, title, "manual", ts),
+                    )
+                    # Resolve TMDb canonical info if possible
+                    try:
+                        if tmdb_api_key:
+                            from movie_meta import fetch_tmdb_canonical
+                            from markets import upsert_market_meta
+
+                            ct, rd, tid = fetch_tmdb_canonical(title, tmdb_api_key)
+                            if ct or rd or tid:
+                                upsert_market_meta(conn, slug, ct, rd, tid)
+                    except Exception:
+                        pass
+                    conn.commit()
+                    added += 1
+                    if len(examples) < 5:
+                        examples.append(f"• {title}")
+                except Exception:
+                    continue
+            send_telegram_message(token, chat_id, f"Seeded {added} market titles.\n" + ("\n".join(examples) if examples else ""))
+            continue
