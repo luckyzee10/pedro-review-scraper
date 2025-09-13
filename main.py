@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Dict, Tuple
 
 from dotenv import load_dotenv
+import requests
 
 from scraper import FEEDS, fetch_all, ScrapedItem
 from sentiment import classify_sentiment
@@ -354,7 +355,18 @@ def handle_telegram_commands(
 
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
-        base_cmds = ["/status", "/movies", "/catalog", "/markets", "/refreshmarkets", "/backfill", "/normalize", "/refreshcatalog", "/health"]
+        base_cmds = [
+            "/status",
+            "/movies",
+            "/catalog",
+            "/markets",
+            "/refreshmarkets",
+            "/backfill",
+            "/normalize",
+            "/refreshcatalog",
+            "/health",
+            "/testapi",
+        ]
         bot_cmds = []
         if bot_username:
             bot_cmds = [
@@ -367,6 +379,7 @@ def handle_telegram_commands(
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
                 f"/health@{bot_username.lower()}",
+                f"/testapi@{bot_username.lower()}",
             ]
         all_cmds = base_cmds + bot_cmds
 
@@ -569,6 +582,77 @@ def handle_telegram_commands(
                 f"TMDb key: {'set' if tmdb_api_key else 'missing'}",
             ]
             send_telegram_message(token, chat_id, "\n".join(parts))
+            continue
+
+        # Active API connectivity test
+        if used_cmd.startswith("/testapi"):
+            results = []
+            # OpenAI
+            try:
+                ok = False
+                if os.getenv("OPENAI_API_KEY", "").strip():
+                    r = requests.get(
+                        "https://api.openai.com/v1/models",
+                        headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY').strip()}"},
+                        timeout=10,
+                    )
+                    ok = r.status_code == 200
+                    results.append(f"OpenAI: {'ok' if ok else f'fail ({r.status_code})'}")
+                else:
+                    results.append("OpenAI: missing key")
+            except Exception as e:
+                results.append(f"OpenAI: error ({type(e).__name__})")
+            # TMDb
+            try:
+                if tmdb_api_key:
+                    r = requests.get(
+                        "https://api.themoviedb.org/3/configuration",
+                        params={"api_key": tmdb_api_key},
+                        timeout=10,
+                    )
+                    results.append(f"TMDb: {'ok' if r.status_code == 200 else f'fail ({r.status_code})'}")
+                else:
+                    results.append("TMDb: missing key")
+            except Exception as e:
+                results.append(f"TMDb: error ({type(e).__name__})")
+            # Polymarket
+            try:
+                r = requests.get(
+                    "https://gamma-api.polymarket.com/markets",
+                    params={"limit": 5, "closed": "false", "search": "rotten"},
+                    timeout=10,
+                )
+                ok = r.status_code == 200
+                count = 0
+                if ok:
+                    d = r.json() or {}
+                    ms = d.get("markets") or d.get("data") or []
+                    if isinstance(ms, dict):
+                        ms = ms.get("markets", []) or []
+                    count = len(ms)
+                results.append(f"Polymarket: {'ok' if ok else f'fail ({r.status_code})'} ({count})")
+            except Exception as e:
+                results.append(f"Polymarket: error ({type(e).__name__})")
+            # Kalshi public v2
+            try:
+                r = requests.get(
+                    "https://api.elections.kalshi.com/trade-api/v2/markets",
+                    params={"limit": 5},
+                    timeout=10,
+                )
+                ok = r.status_code == 200
+                count = 0
+                if ok:
+                    d = r.json() or {}
+                    ms = d.get("markets") or d.get("data") or []
+                    if isinstance(ms, dict):
+                        ms = ms.get("markets", []) or []
+                    count = len(ms)
+                results.append(f"Kalshi v2: {'ok' if ok else f'fail ({r.status_code})'} ({count})")
+            except Exception as e:
+                results.append(f"Kalshi v2: error ({type(e).__name__})")
+
+            send_telegram_message(token, chat_id, "API Connectivity\n" + "\n".join(results))
             continue
         if arg:
             # Single-movie status
