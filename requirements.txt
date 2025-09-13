@@ -1,0 +1,4 @@
+python-dotenv>=1.0.0
+feedparser>=6.0.10
+requests>=2.31.0
+python-telegram-bot>=13.15
