@@ -181,16 +181,29 @@ def _calc_freshness_percent(agg: Dict[str, int], min_count: int = MIN_REVIEWS_FO
     return f"{pct}%"
 
 
+def _html_escape(s: str) -> str:
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+    )
+
+
 def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
     neu = agg.get("Neutral", 0)
     freshness = _calc_freshness_percent(agg)
+    outlet_h = _html_escape(outlet)
+    headline_h = _html_escape(headline)
+    movie_h = _html_escape(movie)
+    sentiment_h = _html_escape(sentiment)
     return (
-        f"🎬 New Review from {outlet}\n"
-        f"\"{headline}\" → {sentiment}\n"
-        f"Aggregate Sentiment for {movie}: {pos}P / {neg}N / {neu}M\n"
-        f"Tomatometer-like: {freshness} Fresh"
+        f"🎬 New Review from <b>{outlet_h}</b>\n"
+        f"“{headline_h}” → <b>{sentiment_h}</b>\n"
+        f"Aggregate for <b>{movie_h}</b>: {pos}P / {neg}N / {neu}M\n"
+        f"Tomatometer-like: <b>{freshness}</b> Fresh"
     )
 
 
@@ -207,11 +220,14 @@ def _kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.commit()
 
 
-def _format_movie_stats_row(movie: str, pos: int, neg: int, neu: int) -> str:
+def _format_movie_stats_row(movie: str, pos: int, neg: int, neu: int, release_date: str | None = None) -> str:
     denom = pos + neg
     fresh = f"{round(100 * (pos/denom))}%" if denom >= MIN_REVIEWS_FOR_PERCENT else "N/A"
     total = pos + neg + neu
-    return f"- {movie}: {pos}P/{neg}N/{neu}M • {fresh} • {total} reviews"
+    movie_h = _html_escape(movie)
+    rd = release_date or "n/a"
+    rd_h = _html_escape(rd)
+    return f"• <b>{movie_h}</b> ({rd_h}) — {pos}P / {neg}N / {neu}M • {fresh} • {total} reviews"
 
 
 def _send_batched_message(token: str, chat_id: str, lines: list[str], max_len: int = 3500) -> None:
@@ -219,13 +235,13 @@ def _send_batched_message(token: str, chat_id: str, lines: list[str], max_len: i
     cur_len = 0
     for line in lines:
         if cur_len + len(line) + 1 > max_len and buf:
-            send_telegram_message(token, chat_id, "\n".join(buf))
+            send_telegram_message(token, chat_id, "\n".join(buf), parse_mode="HTML")
             buf = []
             cur_len = 0
         buf.append(line)
         cur_len += len(line) + 1
     if buf:
-        send_telegram_message(token, chat_id, "\n".join(buf))
+        send_telegram_message(token, chat_id, "\n".join(buf), parse_mode="HTML")
 
 
 def handle_telegram_commands(
@@ -290,11 +306,14 @@ def handle_telegram_commands(
             ).fetchone()
 
             if not row:
-                send_telegram_message(token, chat_id, f"No results for '{arg}'. Try a different title.")
+                arg_h = _html_escape(arg)
+                send_telegram_message(token, chat_id, f"No results for ‘{arg_h}’. Try a different title.", parse_mode="HTML")
             else:
                 movie, pos, neg, neu, total = row
-                msg = "📊 Movie Status\n" + _format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0))
-                send_telegram_message(token, chat_id, msg)
+                # Fetch release date if cached
+                rel = (conn.execute("SELECT release_date FROM movies WHERE movie=?", (movie,)).fetchone() or [None])[0]
+                msg = "📊 <b>Movie Status</b>\n" + _format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0), rel)
+                send_telegram_message(token, chat_id, msg, parse_mode="HTML")
             continue
 
         # General summary ordered by release date proximity
@@ -340,9 +359,10 @@ def handle_telegram_commands(
 
         rows_sorted = sorted(rows, key=sort_key)
 
-        lines: list[str] = ["📊 Movies Summary (by upcoming releases):"]
+        lines: list[str] = ["📊 <b>Movies Summary (Upcoming First)</b>"]
         for movie, pos, neg, neu, total in rows_sorted[:100]:
-            lines.append(_format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0)))
+            rel = rel_map.get(movie)
+            lines.append(_format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0), rel))
         _send_batched_message(token, chat_id, lines)
 
     if last_update_id is not None:

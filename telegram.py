@@ -24,6 +24,7 @@ def send_telegram_message(
     text: str,
     disable_preview: bool = True,
     timeout: int = 15,
+    parse_mode: str | None = "HTML",
 ) -> bool:
     """Send a message to Telegram.
 
@@ -39,6 +40,7 @@ def send_telegram_message(
                     await bot.send_message(
                         chat_id=chat_id,
                         text=text,
+                        parse_mode=parse_mode,
                         disable_web_page_preview=disable_preview,
                     )
 
@@ -47,6 +49,7 @@ def send_telegram_message(
                 bot.send_message(
                     chat_id=chat_id,
                     text=text,
+                    parse_mode=parse_mode,
                     disable_web_page_preview=disable_preview,
                 )
             return True
@@ -61,6 +64,7 @@ def send_telegram_message(
             data={
                 "chat_id": chat_id,
                 "text": text,
+                **({"parse_mode": parse_mode} if parse_mode else {}),
                 "disable_web_page_preview": str(bool(disable_preview)).lower(),
             },
             timeout=timeout,
