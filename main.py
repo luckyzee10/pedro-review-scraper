@@ -254,6 +254,13 @@ def _html_escape(s: str) -> str:
     )
 
 
+def _slugify_title(value: str) -> str:
+    v = value.strip().lower()
+    v = re.sub(r"[^a-z0-9]+", "-", v)
+    v = re.sub(r"-+", "-", v).strip("-")
+    return v
+
+
 def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
@@ -414,7 +421,24 @@ def handle_telegram_commands(
             continue
         if arg:
             # Single-movie status
-            row = conn.execute(
+            # Choose best match from catalog titles
+            catalog = load_catalog_index(conn)
+            want = arg.strip().lower()
+            chosen_slug = None
+            chosen_title = None
+            chosen_rd: str | None = None
+            for slug, (title, rd) in catalog.items():
+                if want in title.lower():
+                    chosen_slug, chosen_title, chosen_rd = slug, title, rd
+                    break
+
+            if not chosen_slug:
+                arg_h = _html_escape(arg)
+                send_telegram_message(token, chat_id, f"No results for ‘{arg_h}’. Try a different title.", parse_mode="HTML")
+                continue
+
+            # Aggregate across rows whose slug maps to chosen_slug
+            rows = conn.execute(
                 """
                 SELECT movie,
                        SUM(CASE WHEN sentiment='Positive' THEN 1 ELSE 0 END) AS pos,
@@ -422,29 +446,25 @@ def handle_telegram_commands(
                        SUM(CASE WHEN sentiment='Neutral' THEN 1 ELSE 0 END)  AS neu,
                        COUNT(*) AS total
                 FROM reviews
-                WHERE LOWER(movie) LIKE LOWER(?)
                 GROUP BY movie
-                ORDER BY total DESC
-                LIMIT 1
-                """,
-                (f"%{arg}%",),
-            ).fetchone()
+                """
+            ).fetchall()
 
-            if not row:
-                arg_h = _html_escape(arg)
-                send_telegram_message(token, chat_id, f"No results for ‘{arg_h}’. Try a different title.", parse_mode="HTML")
-            else:
-                movie, pos, neg, neu, total = row
-                # Ensure/fetch release date (cached)
-                rel = None
-                try:
-                    rel = ensure_release_date(conn, str(movie), tmdb_api_key) if tmdb_api_key else (
-                        (conn.execute("SELECT release_date FROM movies WHERE movie=?", (movie,)).fetchone() or [None])[0]
-                    )
-                except Exception:
-                    rel = (conn.execute("SELECT release_date FROM movies WHERE movie=?", (movie,)).fetchone() or [None])[0]
-                msg = "📊 <b>Movie Status</b>\n" + _format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0), rel)
-                send_telegram_message(token, chat_id, msg, parse_mode="HTML")
+            pos = neg = neu = total = 0
+            for movie, p, n, m, t in rows:
+                if _slugify_title(str(movie)) == chosen_slug:
+                    pos += int(p or 0)
+                    neg += int(n or 0)
+                    neu += int(m or 0)
+                    total += int(t or 0)
+
+            rel = None
+            try:
+                rel = ensure_release_date(conn, chosen_title, tmdb_api_key) if tmdb_api_key else chosen_rd
+            except Exception:
+                rel = chosen_rd
+            msg = "📊 <b>Movie Status</b>\n" + _format_movie_stats_row(chosen_title, pos, neg, neu, rel)
+            send_telegram_message(token, chat_id, msg, parse_mode="HTML")
             continue
 
         # General summary ordered by release date proximity
@@ -465,23 +485,31 @@ def handle_telegram_commands(
             send_telegram_message(token, chat_id, "No reviews yet. Check back soon!")
             continue
 
-        # Ensure and attach release dates (best-effort, cached)
-        rel_map = {}
-        for m, *_rest in rows:
-            rel = None
-            try:
-                rel = ensure_release_date(conn, str(m), tmdb_api_key) if tmdb_api_key else None
-            except Exception:
-                rel = None
-            if not rel:
-                rel = (conn.execute("SELECT release_date FROM movies WHERE movie=?", (m,)).fetchone() or [None])[0]
-            rel_map[m] = rel
+        # Filter to catalog-matching titles and collapse to canonical catalog title
+        catalog = load_catalog_index(conn)
+        agg: dict[str, dict[str, int]] = {}
+        rel_map: dict[str, str | None] = {}
+        for movie, p, n, m, t in rows:
+            slug = _slugify_title(str(movie))
+            if slug not in catalog:
+                continue
+            canon_title, rd = catalog[slug]
+            c = agg.setdefault(canon_title, {"Positive": 0, "Negative": 0, "Neutral": 0, "Total": 0})
+            c["Positive"] += int(p or 0)
+            c["Negative"] += int(n or 0)
+            c["Neutral"] += int(m or 0)
+            c["Total"] += int(t or 0)
+            rel_map[canon_title] = rd
+
+        if not agg:
+            send_telegram_message(token, chat_id, "No catalog-matched reviews yet. Check back soon!")
+            continue
 
         # Sort by proximity to future release date: future soonest first, then unknown, then past
         from datetime import date
 
         def sort_key(item):
-            m, pos, neg, neu, total = item
+            m, counts = item
             rd = rel_map.get(m)
             try:
                 if rd:
@@ -497,12 +525,21 @@ def handle_telegram_commands(
             except Exception:
                 return (1, 99999, m.lower())
 
-        rows_sorted = sorted(rows, key=sort_key)
+        items = list(agg.items())
+        rows_sorted = sorted(items, key=sort_key)
 
         lines: list[str] = ["📊 <b>Movies Summary (Upcoming First)</b>"]
-        for movie, pos, neg, neu, total in rows_sorted[:100]:
+        for movie, counts in rows_sorted[:100]:
             rel = rel_map.get(movie)
-            lines.append(_format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0), rel))
+            lines.append(
+                _format_movie_stats_row(
+                    str(movie),
+                    int(counts.get("Positive", 0)),
+                    int(counts.get("Negative", 0)),
+                    int(counts.get("Neutral", 0)),
+                    rel,
+                )
+            )
         _send_batched_message(token, chat_id, lines)
 
     if last_update_id is not None:
