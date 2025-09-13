@@ -118,6 +118,23 @@ def extract_movie_title(headline: str, summary: str = "") -> str:
     - Final fallback: first ~8 words of the headline.
     """
     text = headline.strip()
+    # Guard: if headline is a URL-like string, try to recover a title-ish phrase from the URL
+    if re.match(r"https?://", text, flags=re.I):
+        try:
+            from urllib.parse import urlparse
+
+            p = urlparse(text)
+            segs = [s for s in (p.path or "").split("/") if s]
+            if segs:
+                last = segs[-1]
+                # Strip extensions and hyphenated suffixes like "-review"
+                last = re.sub(r"\.(html?|php|asp|aspx)$", "", last, flags=re.I)
+                last = re.sub(r"-review.*$", "", last, flags=re.I)
+                candidate = re.sub(r"[-_]+", " ", last).strip()
+                if len(candidate.split()) >= 2:
+                    text = candidate
+        except Exception:
+            pass
     quoted = _find_quoted(text) or _find_quoted(summary)
     if quoted:
         return re.sub(r"\s+", " ", quoted).strip()
@@ -142,6 +159,11 @@ def extract_movie_title(headline: str, summary: str = "") -> str:
             if "review" in left.lower():
                 return right.strip()
             return left.strip()
+
+    # Cleanup common decorations
+    text = re.sub(r"\breview\b", "", text, flags=re.I)
+    text = re.sub(r"\bfilm\b|\bmovie\b", "", text, flags=re.I)
+    text = re.sub(r"\s+[–—-]\s+.*$", "", text).strip()
 
     # Fallback: first 8 words
     words = text.split()
@@ -272,10 +294,14 @@ def handle_telegram_commands(
         # Normalize command
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
-        base_cmds = ["/status", "/movies"]
+        base_cmds = ["/status", "/movies", "/backfill"]
         bot_cmds = []
         if bot_username:
-            bot_cmds = [f"/status@{bot_username.lower()}", f"/movies@{bot_username.lower()}"]
+            bot_cmds = [
+                f"/status@{bot_username.lower()}",
+                f"/movies@{bot_username.lower()}",
+                f"/backfill@{bot_username.lower()}",
+            ]
         all_cmds = base_cmds + bot_cmds
 
         # Identify which command is used and extract argument (movie name) if provided
@@ -288,6 +314,22 @@ def handle_telegram_commands(
             continue
 
         arg = text[len(used_cmd):].strip()
+
+        # Backfill missing release dates on demand
+        if used_cmd.startswith("/backfill"):
+            updated = 0
+            missing = conn.execute(
+                "SELECT DISTINCT movie FROM reviews WHERE movie NOT IN (SELECT movie FROM movies WHERE COALESCE(release_date,'')!='')"
+            ).fetchall()
+            for (m,) in missing:
+                try:
+                    rd = ensure_release_date(conn, str(m), tmdb_api_key)
+                    if rd:
+                        updated += 1
+                except Exception:
+                    pass
+            send_telegram_message(token, chat_id, f"Backfill complete. Updated {updated} titles.")
+            continue
         if arg:
             # Single-movie status
             row = conn.execute(
@@ -464,7 +506,7 @@ def main() -> None:
         # Handle Telegram commands quickly between cycles
         try:
             if telegram_token:
-                handle_telegram_commands(conn, telegram_token, bot_username)
+                handle_telegram_commands(conn, telegram_token, bot_username, tmdb_api_key)
         except Exception as e:
             print(f"[!] Error handling Telegram commands: {e}")
 
@@ -477,7 +519,7 @@ def main() -> None:
         while not stop and time.time() < end_at:
             try:
                 if telegram_token:
-                    handle_telegram_commands(conn, telegram_token, bot_username)
+                    handle_telegram_commands(conn, telegram_token, bot_username, tmdb_api_key)
             except Exception as e:
                 print(f"[!] Error handling Telegram commands: {e}")
             time.sleep(min(5.0, max(0.0, end_at - time.time())))
