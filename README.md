@@ -5,6 +5,7 @@ What this does
 - Classifies each new headline/snippet with OpenAI (Positive/Negative/Neutral)
 - Stores results in SQLite (reviews table)
 - Sends Telegram alerts with rolling per-movie sentiment counts
+- Adds a simple Tomatometer-like percentage: Positive/(Positive+Negative)
 
 Environment variables
 - OPENAI_API_KEY
@@ -80,4 +81,8 @@ Notes
 - Poll interval is 120s by default. To change, set POLL_SECONDS.
 - Duplicate avoidance uses (outlet, headline) unique index. With a persistent DB, restarts won’t re-alert prior items.
 - Movie title extraction is heuristic; tune in main.extract_movie_title if needed.
+- Freshness: Neutral reviews are excluded from the percentage denominator; shows N/A until at least one Positive or Negative exists.
+ - Minimum reviews for percentage: requires at least 3 (Positive+Negative) reviews to show a percentage; configure with `MIN_REVIEWS_FOR_PERCENT`.
 
+Learn more
+- See docs/HOW_IT_WORKS.md for a concise overview of architecture, data flow, configuration, and operations.

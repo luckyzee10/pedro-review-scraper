@@ -24,11 +24,12 @@ from dotenv import load_dotenv
 
 from scraper import FEEDS, fetch_all, ScrapedItem
 from sentiment import classify_sentiment
-from telegram import send_telegram_message
+from telegram import send_telegram_message, fetch_updates, get_me, delete_webhook
 
 
 DB_PATH = os.getenv("REVIEW_DB_PATH", "reviews.db")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "120"))  # seconds
+MIN_REVIEWS_FOR_PERCENT = int(os.getenv("MIN_REVIEWS_FOR_PERCENT", "3"))
 
 
 def init_db(path: str = DB_PATH) -> sqlite3.Connection:
@@ -56,6 +57,14 @@ def init_db(path: str = DB_PATH) -> sqlite3.Connection:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_review
         ON reviews(outlet, headline)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kv (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
         """
     )
     conn.commit()
@@ -156,15 +165,122 @@ def insert_review(
     conn.commit()
 
 
+def _calc_freshness_percent(agg: Dict[str, int], min_count: int = MIN_REVIEWS_FOR_PERCENT) -> str:
+    pos = int(agg.get("Positive", 0))
+    neg = int(agg.get("Negative", 0))
+    denom = pos + neg
+    if denom < min_count:
+        return "N/A"
+    pct = round(100 * (pos / denom))
+    return f"{pct}%"
+
+
 def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
     neu = agg.get("Neutral", 0)
+    freshness = _calc_freshness_percent(agg)
     return (
         f"🎬 New Review from {outlet}\n"
         f"\"{headline}\" → {sentiment}\n"
-        f"Aggregate Sentiment for {movie}: {pos}P / {neg}N / {neu}M"
+        f"Aggregate Sentiment for {movie}: {pos}P / {neg}N / {neu}M\n"
+        f"Tomatometer-like: {freshness} Fresh"
     )
+
+
+def _kv_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def _kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+    conn.commit()
+
+
+def _format_movie_stats_row(movie: str, pos: int, neg: int, neu: int) -> str:
+    denom = pos + neg
+    fresh = f"{round(100 * (pos/denom))}%" if denom >= MIN_REVIEWS_FOR_PERCENT else "N/A"
+    total = pos + neg + neu
+    return f"- {movie}: {pos}P/{neg}N/{neu}M • {fresh} • {total} reviews"
+
+
+def _send_batched_message(token: str, chat_id: str, lines: list[str], max_len: int = 3500) -> None:
+    buf: list[str] = []
+    cur_len = 0
+    for line in lines:
+        if cur_len + len(line) + 1 > max_len and buf:
+            send_telegram_message(token, chat_id, "\n".join(buf))
+            buf = []
+            cur_len = 0
+        buf.append(line)
+        cur_len += len(line) + 1
+    if buf:
+        send_telegram_message(token, chat_id, "\n".join(buf))
+
+
+def handle_telegram_commands(
+    conn: sqlite3.Connection,
+    token: str,
+    bot_username: str | None,
+) -> None:
+    # Offset for getUpdates
+    off_s = _kv_get(conn, "tg_offset")
+    offset = int(off_s) if (off_s and off_s.isdigit()) else None
+    updates = fetch_updates(token, offset=offset, timeout=0)
+    if not updates:
+        return
+
+    last_update_id = None
+    for u in updates:
+        last_update_id = u.get("update_id")
+        msg = u.get("message") or u.get("channel_post")
+        if not msg:
+            continue
+        text = str(msg.get("text") or "").strip()
+        if not text:
+            continue
+        chat = msg.get("chat") or {}
+        chat_id = str(chat.get("id"))
+
+        # Normalize command
+        tlow = text.lower()
+        candidates = ["/status", "/movies"]
+        if bot_username:
+            candidates.extend([f"/status@{bot_username.lower()}", f"/movies@{bot_username.lower()}"])
+        if tlow not in candidates:
+            continue
+
+        # Build stats
+        rows = conn.execute(
+            """
+            SELECT movie,
+                   SUM(CASE WHEN sentiment='Positive' THEN 1 ELSE 0 END) AS pos,
+                   SUM(CASE WHEN sentiment='Negative' THEN 1 ELSE 0 END) AS neg,
+                   SUM(CASE WHEN sentiment='Neutral' THEN 1 ELSE 0 END)  AS neu,
+                   COUNT(*) AS total
+            FROM reviews
+            GROUP BY movie
+            ORDER BY total DESC, movie ASC
+            LIMIT 100
+            """
+        ).fetchall()
+
+        if not rows:
+            send_telegram_message(token, chat_id, "No reviews yet. Check back soon!")
+            continue
+
+        lines: list[str] = ["📊 Movies Summary (Top 100):"]
+        for movie, pos, neg, neu, total in rows:
+            lines.append(_format_movie_stats_row(str(movie), int(pos or 0), int(neg or 0), int(neu or 0)))
+        # Send possibly in multiple messages
+        _send_batched_message(token, chat_id, lines)
+
+    if last_update_id is not None:
+        _kv_set(conn, "tg_offset", str(int(last_update_id) + 1))
 
 
 def main() -> None:
@@ -189,6 +305,12 @@ def main() -> None:
         stop = True
 
     signal.signal(signal.SIGINT, _handle_sigint)
+
+    # Prepare Telegram getUpdates mode (no webhook)
+    if telegram_token:
+        delete_webhook(telegram_token)
+    me = get_me(telegram_token) if telegram_token else {}
+    bot_username = me.get("username") if isinstance(me, dict) else None
 
     print("[+] Starting poll loop. Interval:", POLL_SECONDS, "seconds")
     while not stop:
@@ -228,6 +350,13 @@ def main() -> None:
             if not ok:
                 print("[!] Failed to send Telegram message for:", headline)
             new_count += 1
+
+        # Handle Telegram commands quickly between cycles
+        try:
+            if telegram_token:
+                handle_telegram_commands(conn, telegram_token, bot_username)
+        except Exception as e:
+            print(f"[!] Error handling Telegram commands: {e}")
 
         elapsed = time.time() - start
         print(f"[•] Cycle complete: {new_count} new reviews. Slept: {int(elapsed)}s")

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Optional
+from typing import Optional, Any, Dict, List
 
 import requests
 
@@ -69,3 +69,49 @@ def send_telegram_message(
     except Exception:
         return False
 
+
+def delete_webhook(token: str, timeout: int = 10) -> bool:
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/deleteWebhook",
+            timeout=timeout,
+        )
+        return resp.ok and resp.json().get("ok", False)
+    except Exception:
+        return False
+
+
+def get_me(token: str, timeout: int = 10) -> Dict[str, Any]:
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/getMe",
+            timeout=timeout,
+        )
+        if resp.ok:
+            return resp.json().get("result", {})
+    except Exception:
+        pass
+    return {}
+
+
+def fetch_updates(token: str, offset: Optional[int] = None, timeout: int = 0) -> List[Dict[str, Any]]:
+    params: Dict[str, Any] = {
+        "timeout": timeout,
+        "allowed_updates": ["message", "my_chat_member", "channel_post"],
+    }
+    if offset is not None:
+        params["offset"] = offset
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{token}/getUpdates",
+            params=params,
+            timeout=max(1, timeout + 5),
+        )
+        if not resp.ok:
+            return []
+        data = resp.json()
+        if not data.get("ok", False):
+            return []
+        return data.get("result", [])
+    except Exception:
+        return []
