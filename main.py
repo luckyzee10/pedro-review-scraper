@@ -32,7 +32,12 @@ from movie_meta import (
     load_catalog_index,
     match_movie_from_url,
 )
-from markets import ensure_tables as ensure_market_tables, refresh_market_titles, load_market_index
+from markets import (
+    ensure_tables as ensure_market_tables,
+    refresh_market_titles,
+    load_market_index,
+    load_market_canon,
+)
 
 
 DB_PATH = os.getenv("REVIEW_DB_PATH", "reviews.db")
@@ -587,16 +592,23 @@ def handle_telegram_commands(
             send_telegram_message(token, chat_id, "No reviews yet. Check back soon!")
             continue
 
-        # Filter to catalog & market-matching titles; collapse to canonical catalog title
-        catalog = load_catalog_index(conn)
+        # Filter to market-matching titles; collapse to canonical market title
         markets = load_market_index(conn)
+        mcanon = load_market_canon(conn)
         agg: dict[str, dict[str, int]] = {}
         rel_map: dict[str, str | None] = {}
         for movie, p, n, m, t in rows:
             slug = _slugify_title(str(movie))
-            if slug not in catalog or slug not in markets:
+            if slug not in markets:
                 continue
-            canon_title, rd = catalog[slug]
+            # Prefer canonical title from TMDb resolution if available; else market title
+            ct_tuple = mcanon.get(slug)
+            if ct_tuple and (ct_tuple[0] or ct_tuple[1]):
+                canon_title = ct_tuple[0] or markets[slug][0]
+                rd = ct_tuple[1]
+            else:
+                canon_title = markets[slug][0]
+                rd = None
             c = agg.setdefault(canon_title, {"Positive": 0, "Negative": 0, "Neutral": 0, "Total": 0})
             c["Positive"] += int(p or 0)
             c["Negative"] += int(n or 0)
@@ -605,7 +617,7 @@ def handle_telegram_commands(
             rel_map[canon_title] = rd
 
         if not agg:
-            send_telegram_message(token, chat_id, "No catalog-matched reviews yet. Check back soon!")
+            send_telegram_message(token, chat_id, "No market-matched reviews yet. Check back soon!")
             continue
 
         # Sort by proximity to future release date: future soonest first, then unknown, then past
@@ -734,14 +746,15 @@ def main() -> None:
 
     print("[+] Starting poll loop. Interval:", POLL_SECONDS, "seconds")
     catalog_index = refresh_catalog_if_needed(conn, tmdb_api_key)
-    # Initial market titles refresh and load
+    # Initial market titles refresh and load (now primary gating)
     last_market_refresh = 0.0
     try:
-        n = refresh_market_titles(conn, kalshi_key, kalshi_secret)
+        n = refresh_market_titles(conn, kalshi_key, kalshi_secret, tmdb_api_key)
         print(f"[+] Market titles refresh: upserted {n}")
     except Exception as e:
         print(f"[!] Market titles refresh failed: {e}")
     market_index = load_market_index(conn)
+    market_canon = load_market_canon(conn)
     while not stop:
         start = time.time()
         # Periodically refresh catalog (e.g., every 6 hours)
@@ -749,11 +762,12 @@ def main() -> None:
             catalog_index = refresh_catalog_if_needed(conn, tmdb_api_key)
         except Exception:
             pass
-        # Refresh market titles periodically
+        # Refresh market titles periodically (and update canon via TMDb)
         try:
             if time.time() - last_market_refresh >= MARKET_REFRESH_SECONDS:
-                n = refresh_market_titles(conn, kalshi_key, kalshi_secret)
+                n = refresh_market_titles(conn, kalshi_key, kalshi_secret, tmdb_api_key)
                 market_index = load_market_index(conn)
+                market_canon = load_market_canon(conn)
                 last_market_refresh = time.time()
                 print(f"[+] Market titles refresh: upserted {n}; total {len(market_index)}")
         except Exception as e:
@@ -772,14 +786,25 @@ def main() -> None:
             if row_exists(conn, outlet, headline):
                 continue
 
-            # Match movie via TMDb window catalog using URL (strict gate)
-            matched = match_movie_from_url(it.link or headline, catalog_index)
-            if not matched:
-                # Skip items whose URL doesn't contain a known movie in our window
+            # Match movie via market titles (primary gate): find slug in URL
+            link_or_title = it.link or headline
+            path = link_or_title.lower()
+            best_slug = None
+            best_len = 0
+            for slug in market_index.keys():
+                if slug in path and len(slug) > best_len:
+                    best_slug, best_len = slug, len(slug)
+            if not best_slug:
                 continue
-            movie, rel_date = matched
-            # Only accept if this movie has an open market (Polymarket/Kalshi)
-            if _slugify_title(movie) not in market_index:
+            # Resolve display title and release date from market canon when available
+            canon = market_canon.get(best_slug)
+            if canon:
+                canon_title, rel_date, _tid = canon
+            else:
+                canon_title, rel_date = None, None
+            base_title = market_index.get(best_slug, (None, None))[0]
+            movie = canon_title or base_title or ""
+            if not movie:
                 continue
 
             # Try to resolve and cache release date for new movies (best-effort)

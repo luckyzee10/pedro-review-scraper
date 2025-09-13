@@ -29,6 +29,17 @@ def ensure_tables(conn) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS market_meta (
+            slug TEXT PRIMARY KEY,
+            canon_title TEXT,
+            release_date TEXT,
+            tmdb_id INTEGER,
+            updated_at TEXT
+        )
+        """
+    )
     conn.commit()
 
 
@@ -157,7 +168,7 @@ def fetch_kalshi_titles(api_key: Optional[str], api_secret: Optional[str], timeo
     return titles
 
 
-def refresh_market_titles(conn, kalshi_key: Optional[str], kalshi_secret: Optional[str]) -> int:
+def refresh_market_titles(conn, kalshi_key: Optional[str], kalshi_secret: Optional[str], tmdb_api_key: Optional[str] = None) -> int:
     ensure_tables(conn)
     upserted = 0
     seen = set()
@@ -179,14 +190,42 @@ def refresh_market_titles(conn, kalshi_key: Optional[str], kalshi_secret: Option
     for slug, title in fetch_polymarket_titles():
         upsert("polymarket", slug, title)
 
-    # Kalshi (optional auth)
+    # Kalshi (public v2 + optional auth)
     for slug, title in fetch_kalshi_titles(kalshi_key, kalshi_secret):
         upsert("kalshi", slug, title)
 
     conn.commit()
+    # Optionally resolve canonical titles/release dates via TMDb for newly seen slugs
+    if tmdb_api_key:
+        try:
+            from movie_meta import fetch_tmdb_canonical
+
+            rows = conn.execute("SELECT slug, title FROM market_titles").fetchall()
+            for slug, title in rows:
+                ct, rd, tid = fetch_tmdb_canonical(title, tmdb_api_key)
+                if ct or rd or tid:
+                    upsert_market_meta(conn, slug, ct, rd, tid)
+        except Exception:
+            pass
+
     return upserted
 
 
 def load_market_index(conn) -> dict[str, tuple[str, str]]:
     rows = conn.execute("SELECT slug, title, source FROM market_titles").fetchall()
     return {slug: (title, source) for slug, title, source in rows}
+
+
+def upsert_market_meta(conn, slug: str, canon_title: Optional[str], release_date: Optional[str], tmdb_id: Optional[int]) -> None:
+    ts = datetime.utcnow().isoformat()
+    conn.execute(
+        "INSERT INTO market_meta(slug, canon_title, release_date, tmdb_id, updated_at) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(slug) DO UPDATE SET canon_title=excluded.canon_title, release_date=excluded.release_date, tmdb_id=excluded.tmdb_id, updated_at=excluded.updated_at",
+        (slug, canon_title or "", release_date or "", tmdb_id or 0, ts),
+    )
+    conn.commit()
+
+
+def load_market_canon(conn) -> dict[str, tuple[Optional[str], Optional[str], Optional[int]]]:
+    rows = conn.execute("SELECT slug, NULLIF(canon_title,''), NULLIF(release_date,''), NULLIF(tmdb_id,0) FROM market_meta").fetchall()
+    return {slug: (ct, rd, tid) for slug, ct, rd, tid in rows}

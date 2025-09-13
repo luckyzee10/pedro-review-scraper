@@ -107,6 +107,44 @@ def ensure_release_date(conn, movie: str, tmdb_api_key: Optional[str]) -> Option
     return rd
 
 
+def fetch_tmdb_canonical(title: str, api_key: str, timeout: int = 10) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+    """Return (canonical_title, release_date, tmdb_id) for a title via TMDb.
+
+    Chooses an exact case-insensitive match if available; otherwise the first result.
+    Returns (None, None, None) if not found or on error.
+    """
+    try:
+        resp = requests.get(
+            "https://api.themoviedb.org/3/search/movie",
+            params={"api_key": api_key, "query": title, "include_adult": "false"},
+            timeout=timeout,
+        )
+        if not resp.ok:
+            return None, None, None
+        data = resp.json() or {}
+        results = data.get("results") or []
+        if not results:
+            return None, None, None
+        lowered = title.lower().strip()
+        best = None
+        for r in results:
+            if str(r.get("title", "")).lower().strip() == lowered:
+                best = r
+                break
+        best = best or results[0]
+        canon_title = best.get("title") or best.get("original_title")
+        rd = best.get("release_date") or None
+        tmdb_id = best.get("id")
+        if rd:
+            try:
+                datetime.strptime(rd, "%Y-%m-%d")
+            except Exception:
+                rd = None
+        return canon_title, rd, tmdb_id
+    except Exception:
+        return None, None, None
+
+
 def _slugify(value: str) -> str:
     import re
 
