@@ -95,6 +95,7 @@ Customization
 - Movie title heuristic: adjust `extract_movie_title` in `main.py`.
 - Model selection: change `model` in `sentiment.classify_sentiment`.
 - Message format: adjust `format_message` in `main.py`.
+ - URL filter: set env `STRICT_URL_REVIEW=1` to only accept items whose URL contains the word "review". This reduces noise but may exclude genuine reviews from outlets without "review" in their URLs.
 
 Security
 - Treat `OPENAI_API_KEY` and `TELEGRAM_BOT_TOKEN` as secrets. Rotate if leaked.

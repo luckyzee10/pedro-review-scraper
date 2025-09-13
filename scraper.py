@@ -11,6 +11,7 @@ from typing import Iterable, List, Dict, Any
 from urllib.parse import urlparse
 
 import feedparser
+import os
 
 
 # Default feeds provided by the user
@@ -58,6 +59,11 @@ def _is_review_candidate(title: str, summary: str, link: str) -> bool:
     if "review" not in text:
         return False
     hints = ("film", "movie", "cinema", "screen", "feature")
+    # Optional stricter filter: require 'review' in the URL itself
+    strict_url = os.getenv("STRICT_URL_REVIEW", "").strip().lower() in {"1", "true", "yes", "on"}
+    if strict_url and link:
+        if "review" not in link.lower():
+            return False
     return any(h in text for h in hints) or True  # allow generic 'review' when unsure
 
 
@@ -100,4 +106,3 @@ def fetch_all(feeds: Iterable[str] = FEEDS) -> List[ScrapedItem]:
             # Be resilient to malformed feeds or transient parse errors
             continue
     return results
-
