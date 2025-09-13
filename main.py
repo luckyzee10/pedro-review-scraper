@@ -421,14 +421,25 @@ def handle_telegram_commands(
 
         arg = text[len(used_cmd):].strip()
 
-        # List current market-matched titles (optional filter)
+        # List current market-matched titles (optional filter), de-duped by canonical title
         if used_cmd.startswith("/markets"):
             markets = load_market_index(conn)
-            # Build (title, source) pairs; catalog cross-check is optional here
-            items = [(title, src) for (_slug, (title, src)) in markets.items()]
+            mcanon = load_market_canon(conn)
+            # Build display titles preferring canonical TMDb title
+            pairs = []
+            for slug, (title, src) in markets.items():
+                ct = (mcanon.get(slug) or (None, None, None))[0]
+                disp = ct or title
+                pairs.append((disp, src))
             if arg:
                 q = arg.strip().lower()
-                items = [(t, s) for (t, s) in items if q in t.lower()]
+                pairs = [(t, s) for (t, s) in pairs if q in t.lower()]
+            # De-dup by display title preferring polymarket if both exist
+            best = {}
+            for t, s in pairs:
+                if t not in best or best[t] != "polymarket":
+                    best[t] = s
+            items = sorted(best.items(), key=lambda kv: kv[0].lower())
             if not items:
                 # Attempt on-demand refresh when empty
                 try:
@@ -437,9 +448,20 @@ def handle_telegram_commands(
                         os.getenv("KALSHI_API_KEY", "").strip(),
                         os.getenv("KALSHI_API_SECRET", "").strip(),
                         os.getenv("TMDB_API_KEY", "").strip(),
+                        os.getenv("OPENAI_API_KEY", "").strip(),
                     )
                     markets = load_market_index(conn)
-                    items = [(title, src) for (_slug, (title, src)) in markets.items()]
+                    mcanon = load_market_canon(conn)
+                    pairs = []
+                    for slug, (title, src) in markets.items():
+                        ct = (mcanon.get(slug) or (None, None, None))[0]
+                        disp = ct or title
+                        pairs.append((disp, src))
+                    best = {}
+                    for t, s in pairs:
+                        if t not in best or best[t] != "polymarket":
+                            best[t] = s
+                    items = sorted(best.items(), key=lambda kv: kv[0].lower())
                 except Exception:
                     items = []
             if not items:
@@ -457,15 +479,8 @@ def handle_telegram_commands(
                     f"No market-matched titles yet. Sources: {breakdown}. Try /refreshmarkets.",
                 )
                 continue
-            # De-dup by title preferring polymarket label if both exist
-            best = {}
-            for t, s in items:
-                if t not in best or best[t] != "polymarket":
-                    best[t] = s
-            # Sort alphabetically
-            out = sorted(best.items(), key=lambda kv: kv[0].lower())
             lines = ["📈 <b>Market Titles</b>"]
-            for t, s in out[:200]:
+            for t, s in items[:200]:
                 t_h = _html_escape(t)
                 lines.append(f"• <b>{t_h}</b> — {s}")
             _send_batched_message(token, chat_id, lines)

@@ -51,6 +51,18 @@ def _slugify(value: str) -> str:
     return v
 
 
+def _is_ticker_like(title: str) -> bool:
+    t = (title or "").strip()
+    if not t or " " in t:
+        return False
+    low = t.lower()
+    if low.startswith("kxrt") or low.startswith("kxr"):
+        return True
+    if len(low) >= 8 and low.isalnum():
+        return True
+    return False
+
+
 def _guess_movie_from_text(text: str, openai_api_key: Optional[str] = None) -> Optional[str]:
     t = (text or "").strip()
     if not t:
@@ -58,7 +70,7 @@ def _guess_movie_from_text(text: str, openai_api_key: Optional[str] = None) -> O
     # Preferred: ask OpenAI to extract the title when key present
     try:
         title = extract_market_title(t, api_key=openai_api_key)
-        if title:
+        if title and not _is_ticker_like(title):
             return title
     except Exception:
         pass
