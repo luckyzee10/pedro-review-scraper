@@ -435,9 +435,16 @@ def main() -> None:
         elapsed = time.time() - start
         print(f"[•] Cycle complete: {new_count} new reviews. Slept: {int(elapsed)}s")
 
-        # Sleep remaining time of the 2-minute window
+        # Sleep remaining time of the window, but poll commands every ~5s for responsiveness
         remaining = max(0.0, POLL_SECONDS - elapsed)
-        time.sleep(remaining)
+        end_at = time.time() + remaining
+        while not stop and time.time() < end_at:
+            try:
+                if telegram_token:
+                    handle_telegram_commands(conn, telegram_token, bot_username)
+            except Exception as e:
+                print(f"[!] Error handling Telegram commands: {e}")
+            time.sleep(min(5.0, max(0.0, end_at - time.time())))
 
     print("[+] Stopping. Goodbye!")
 
