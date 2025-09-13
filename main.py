@@ -406,6 +406,25 @@ def handle_telegram_commands(
             _send_batched_message(token, chat_id, lines)
             continue
 
+        # Force markets refresh
+        if used_cmd.startswith("/refreshmarkets"):
+            try:
+                n = refresh_market_titles(
+                    conn,
+                    os.getenv("KALSHI_API_KEY", "").strip(),
+                    os.getenv("KALSHI_API_SECRET", "").strip(),
+                    os.getenv("TMDB_API_KEY", "").strip(),
+                )
+                msize = len(load_market_index(conn))
+                send_telegram_message(
+                    token,
+                    chat_id,
+                    f"Markets refreshed: upserted {n}. Total market titles now {msize}.",
+                )
+            except Exception as e:
+                send_telegram_message(token, chat_id, f"Markets refresh failed: {e}")
+            continue
+
         # List current catalog titles (optionally filter by substring)
         if used_cmd.startswith("/catalog"):
             catalog = load_catalog_index(conn)
@@ -865,12 +884,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-        # Force markets refresh
-        if used_cmd.startswith("/refreshmarkets"):
-            try:
-                n = refresh_market_titles(conn, os.getenv("KALSHI_API_KEY", "").strip(), os.getenv("KALSHI_API_SECRET", "").strip(), os.getenv("TMDB_API_KEY", "").strip())
-                msize = len(load_market_index(conn))
-                send_telegram_message(token, chat_id, f"Markets refreshed: upserted {n}. Total market titles now {msize}.")
-            except Exception as e:
-                send_telegram_message(token, chat_id, f"Markets refresh failed: {e}")
-            continue
