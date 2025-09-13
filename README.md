@@ -14,6 +14,9 @@ Environment variables
 - TELEGRAM_CHAT_ID
 - TMDB_API_KEY (optional, enables movie release date lookups for better sorting)
 - REVIEW_DB_PATH (optional, defaults to reviews.db; use /data/reviews.db in containers)
+ - KALSHI_API_KEY / KALSHI_API_SECRET (optional, adds Kalshi markets to the open-bets filter)
+ - CATALOG_PAST_DAYS, CATALOG_FUTURE_DAYS, CATALOG_REFRESH_SECONDS (optional)
+ - MARKET_REFRESH_SECONDS (optional, default 3600)
 
 Quick local run
 1) Python 3.11, then: pip install -r requirements.txt
@@ -87,6 +90,7 @@ Notes
 - Freshness: Neutral reviews are excluded from the percentage denominator; shows N/A until at least one Positive or Negative exists.
  - Minimum reviews for percentage: requires at least 3 (Positive+Negative) reviews to show a percentage; configure with `MIN_REVIEWS_FOR_PERCENT`.
  - Filtering: the scraper only accepts items that look like reviews based on cues in the title/URL such as “review”, “critic review”, “film review”, “our take on”, “verdict”, or star ratings (★ / “3 stars”).
+ - Catalog + Markets gating: only items whose URLs match a TMDb catalog slug AND which have an open market on Polymarket or Kalshi are processed and included in /status.
  - Catalog gating: only keeps entries whose URL path contains the slug of a film in a rolling TMDb window (default: 5 days past → 90 days ahead). Configure via `CATALOG_PAST_DAYS`, `CATALOG_FUTURE_DAYS`, `CATALOG_REFRESH_SECONDS`.
 
  Learn more

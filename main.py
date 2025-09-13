@@ -32,6 +32,7 @@ from movie_meta import (
     load_catalog_index,
     match_movie_from_url,
 )
+from markets import ensure_tables as ensure_market_tables, refresh_market_titles, load_market_index
 
 
 DB_PATH = os.getenv("REVIEW_DB_PATH", "reviews.db")
@@ -40,6 +41,7 @@ MIN_REVIEWS_FOR_PERCENT = int(os.getenv("MIN_REVIEWS_FOR_PERCENT", "3"))
 CATALOG_PAST_DAYS = int(os.getenv("CATALOG_PAST_DAYS", "5"))
 CATALOG_FUTURE_DAYS = int(os.getenv("CATALOG_FUTURE_DAYS", "90"))
 CATALOG_REFRESH_SECONDS = int(os.getenv("CATALOG_REFRESH_SECONDS", "21600"))  # 6h
+MARKET_REFRESH_SECONDS = int(os.getenv("MARKET_REFRESH_SECONDS", "3600"))  # 1h
 
 
 def init_db(path: str = DB_PATH) -> sqlite3.Connection:
@@ -80,6 +82,11 @@ def init_db(path: str = DB_PATH) -> sqlite3.Connection:
     # Ensure movie metadata table exists
     try:
         ensure_movie_tables(conn)
+    except Exception:
+        pass
+    # Ensure market titles table exists
+    try:
+        ensure_market_tables(conn)
     except Exception:
         pass
     conn.commit()
@@ -491,12 +498,13 @@ def handle_telegram_commands(
             # Single-movie status
             # Choose best match from catalog titles
             catalog = load_catalog_index(conn)
+            markets = load_market_index(conn)
             want = arg.strip().lower()
             chosen_slug = None
             chosen_title = None
             chosen_rd: str | None = None
             for slug, (title, rd) in catalog.items():
-                if want in title.lower():
+                if want in title.lower() and slug in markets:
                     chosen_slug, chosen_title, chosen_rd = slug, title, rd
                     break
 
@@ -553,13 +561,14 @@ def handle_telegram_commands(
             send_telegram_message(token, chat_id, "No reviews yet. Check back soon!")
             continue
 
-        # Filter to catalog-matching titles and collapse to canonical catalog title
+        # Filter to catalog & market-matching titles; collapse to canonical catalog title
         catalog = load_catalog_index(conn)
+        markets = load_market_index(conn)
         agg: dict[str, dict[str, int]] = {}
         rel_map: dict[str, str | None] = {}
         for movie, p, n, m, t in rows:
             slug = _slugify_title(str(movie))
-            if slug not in catalog:
+            if slug not in catalog or slug not in markets:
                 continue
             canon_title, rd = catalog[slug]
             c = agg.setdefault(canon_title, {"Positive": 0, "Negative": 0, "Neutral": 0, "Total": 0})
@@ -672,6 +681,8 @@ def main() -> None:
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     tmdb_api_key = os.getenv("TMDB_API_KEY", "").strip()
+    kalshi_key = os.getenv("KALSHI_API_KEY", "").strip()
+    kalshi_secret = os.getenv("KALSHI_API_SECRET", "").strip()
 
     if not telegram_token or not telegram_chat_id:
         print("[!] TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set.")
@@ -697,6 +708,14 @@ def main() -> None:
 
     print("[+] Starting poll loop. Interval:", POLL_SECONDS, "seconds")
     catalog_index = refresh_catalog_if_needed(conn, tmdb_api_key)
+    # Initial market titles refresh and load
+    last_market_refresh = 0.0
+    try:
+        n = refresh_market_titles(conn, kalshi_key, kalshi_secret)
+        print(f"[+] Market titles refresh: upserted {n}")
+    except Exception as e:
+        print(f"[!] Market titles refresh failed: {e}")
+    market_index = load_market_index(conn)
     while not stop:
         start = time.time()
         # Periodically refresh catalog (e.g., every 6 hours)
@@ -704,6 +723,15 @@ def main() -> None:
             catalog_index = refresh_catalog_if_needed(conn, tmdb_api_key)
         except Exception:
             pass
+        # Refresh market titles periodically
+        try:
+            if time.time() - last_market_refresh >= MARKET_REFRESH_SECONDS:
+                n = refresh_market_titles(conn, kalshi_key, kalshi_secret)
+                market_index = load_market_index(conn)
+                last_market_refresh = time.time()
+                print(f"[+] Market titles refresh: upserted {n}; total {len(market_index)}")
+        except Exception as e:
+            print(f"[!] Market titles refresh failed: {e}")
         try:
             items = fetch_all(FEEDS)
         except Exception as e:
@@ -724,6 +752,9 @@ def main() -> None:
                 # Skip items whose URL doesn't contain a known movie in our window
                 continue
             movie, rel_date = matched
+            # Only accept if this movie has an open market (Polymarket/Kalshi)
+            if _slugify_title(movie) not in market_index:
+                continue
 
             # Try to resolve and cache release date for new movies (best-effort)
             try:

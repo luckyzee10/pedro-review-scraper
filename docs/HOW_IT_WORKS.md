@@ -29,7 +29,7 @@ Data Flow
 1) Refresh TMDb catalog of movies releasing in a rolling window (default: from 5 days ago to 90 days ahead). Stored in the `catalog` table with slug+title+date.
 2) Fetch all feeds → list of entries.
 3) Filter: accept only entries with strong “review” cues (review/critic review/film review/our take on/verdict/★/N stars).
-4) Strict match: keep an entry only if its URL path contains a slug matching one of the catalog titles.
+4) Strict match: keep an entry only if its URL path contains a slug matching one of the catalog titles AND the movie has an open market (Polymarket or Kalshi).
 5) Duplicate check: `SELECT 1 FROM reviews WHERE outlet=? AND headline=?`.
 6) Sentiment classification via OpenAI (temperature 0, tiny max tokens).
 7) Insert into SQLite: `reviews(outlet, movie, headline, sentiment, timestamp)` and cache release date when available.
@@ -182,3 +182,11 @@ Release Dates & Sorting
   - Future releases (today or later): ordered from soonest → farthest.
   - Unknown release date: shown after all known future releases.
   - Past releases: shown last.
+
+Prediction Market Gating
+- Sources
+  - Polymarket (public HTTP API) and Kalshi (requires API credentials).
+- Storage
+  - The union of detected movie titles is stored in `market_titles(slug, title, source, updated_at)`.
+- Matching
+  - Only entries whose URL matches a TMDb catalog slug AND appear in `market_titles` are processed and shown in summaries.
