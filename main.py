@@ -342,12 +342,13 @@ def handle_telegram_commands(
 
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
-        base_cmds = ["/status", "/movies", "/backfill", "/normalize", "/refreshcatalog", "/health"]
+        base_cmds = ["/status", "/movies", "/catalog", "/backfill", "/normalize", "/refreshcatalog", "/health"]
         bot_cmds = []
         if bot_username:
             bot_cmds = [
                 f"/status@{bot_username.lower()}",
                 f"/movies@{bot_username.lower()}",
+                f"/catalog@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -365,6 +366,48 @@ def handle_telegram_commands(
             continue
 
         arg = text[len(used_cmd):].strip()
+
+        # List current catalog titles (optionally filter by substring)
+        if used_cmd.startswith("/catalog"):
+            catalog = load_catalog_index(conn)
+            items = [(title, rd) for (_slug, (title, rd)) in catalog.items()]
+            # Optional filter
+            if arg:
+                q = arg.strip().lower()
+                items = [(t, rd) for (t, rd) in items if q in t.lower()]
+
+            if not items:
+                send_telegram_message(token, chat_id, "Catalog is empty or no matches.")
+                continue
+
+            # Sort by release date proximity (upcoming first, then unknown, then past)
+            from datetime import date
+
+            def ckey(itm):
+                t, rd = itm
+                try:
+                    if rd:
+                        y, mo, d = map(int, rd.split("-"))
+                        rdate = date(y, mo, d)
+                        today = date.today()
+                        if rdate >= today:
+                            return (0, (rdate - today).days, t.lower())
+                        else:
+                            return (2, (today - rdate).days, t.lower())
+                    else:
+                        return (1, 99999, t.lower())
+                except Exception:
+                    return (1, 99999, t.lower())
+
+            items = sorted(items, key=ckey)
+
+            lines = ["🎞️ <b>Catalog Titles (Upcoming First)</b>"]
+            for t, rd in items[:200]:
+                t_h = _html_escape(t)
+                rd_h = _html_escape(rd or "n/a")
+                lines.append(f"• <b>{t_h}</b> ({rd_h})")
+            _send_batched_message(token, chat_id, lines)
+            continue
 
         # Backfill missing release dates on demand
         if used_cmd.startswith("/backfill"):

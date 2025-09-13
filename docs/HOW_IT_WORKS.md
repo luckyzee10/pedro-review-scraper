@@ -168,6 +168,12 @@ Data Hygiene Commands
   - Rewrites stored movie titles that are raw URLs into cleaner titles, with Guardian-specific handling for slugs like `…/movie-name-review-…`.
   - `/normalize all` will attempt URL-based normalization for all domains, not just Guardian.
 
+Catalog Commands
+- `/catalog`
+  - Lists the current TMDb catalog titles in the rolling window (even if no reviews yet), sorted by upcoming release first.
+- `/catalog <filter>`
+  - Filters catalog titles by substring (case-insensitive) before listing.
+
 Release Dates & Sorting
 - Where release dates come from
   - The app maintains a rolling TMDb catalog and also looks up dates on demand for single movies. Dates are cached in SQLite `movies`.
