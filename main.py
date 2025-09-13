@@ -342,7 +342,7 @@ def handle_telegram_commands(
 
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
-        base_cmds = ["/status", "/movies", "/backfill", "/normalize"]
+        base_cmds = ["/status", "/movies", "/backfill", "/normalize", "/refreshcatalog", "/health"]
         bot_cmds = []
         if bot_username:
             bot_cmds = [
@@ -350,6 +350,8 @@ def handle_telegram_commands(
                 f"/movies@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
+                f"/refreshcatalog@{bot_username.lower()}",
+                f"/health@{bot_username.lower()}",
             ]
         all_cmds = base_cmds + bot_cmds
 
@@ -418,6 +420,29 @@ def handle_telegram_commands(
             if preview:
                 msg_lines.append("Examples:\n" + "\n".join(_html_escape(x) for x in preview))
             send_telegram_message(token, chat_id, "\n".join(msg_lines), parse_mode="HTML")
+            continue
+
+        # Force TMDb catalog refresh
+        if used_cmd.startswith("/refreshcatalog"):
+            n = refresh_catalog_now(conn, tmdb_api_key)
+            size = len(load_catalog_index(conn))
+            send_telegram_message(token, chat_id, f"Catalog refreshed: upserted {n}. Total titles now {size}.")
+            continue
+
+        # Health check: show basic connectivity/status
+        if used_cmd.startswith("/health"):
+            from telegram import get_me
+            me = get_me(token) or {}
+            cat_size = len(load_catalog_index(conn))
+            last = _kv_get(conn, "catalog_last_refresh") or "never"
+            parts = [
+                f"Bot: @{me.get('username','?')}",
+                f"Catalog titles: {cat_size}",
+                f"Last catalog refresh: {last}",
+                f"DB reviews: {conn.execute('SELECT COUNT(*) FROM reviews').fetchone()[0]}",
+                f"TMDb key: {'set' if tmdb_api_key else 'missing'}",
+            ]
+            send_telegram_message(token, chat_id, "\n".join(parts))
             continue
         if arg:
             # Single-movie status
@@ -577,6 +602,24 @@ def refresh_catalog_if_needed(conn: sqlite3.Connection, tmdb_api_key: str | None
             print(f"[!] Catalog refresh failed: {e}")
 
     return load_catalog_index(conn)
+
+
+def refresh_catalog_now(conn: sqlite3.Connection, tmdb_api_key: str | None) -> int:
+    if not tmdb_api_key:
+        return 0
+    try:
+        n = refresh_catalog_window(
+            conn,
+            api_key=tmdb_api_key,
+            days_past=CATALOG_PAST_DAYS,
+            days_future=CATALOG_FUTURE_DAYS,
+        )
+        from datetime import datetime, timezone
+
+        _kv_set(conn, "catalog_last_refresh", datetime.now(timezone.utc).isoformat())
+        return n
+    except Exception:
+        return 0
 
 
 def main() -> None:
