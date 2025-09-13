@@ -144,6 +144,39 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
                             seen.add(s2)
         except Exception:
             pass
+        # Final fallback: GraphQL query (best-effort) if REST returned nothing
+        if not titles:
+            try:
+                gql_url = "https://gamma-api.polymarket.com/graphql"
+                query = (
+                    "query MarketList($limit:Int,$closed:Boolean){\n"
+                    "  markets(limit:$limit, closed:$closed){\n"
+                    "    question title name condition status closed description\n"
+                    "  }\n"
+                    "}"
+                )
+                r = requests.post(
+                    gql_url,
+                    json={"query": query, "variables": {"limit": 1000, "closed": False}},
+                    timeout=timeout,
+                )
+                if r.ok:
+                    d = r.json() or {}
+                    markets = ((d.get("data") or {}).get("markets")) or []
+                    for m in markets:
+                        q = str(m.get("question") or m.get("title") or m.get("name") or m.get("condition") or "")
+                        status = str(m.get("status") or "").lower()
+                        closed = m.get("closed")
+                        if closed or status in {"closed", "resolved", "settled"}:
+                            continue
+                        hay = q.lower() + " " + str(m.get("description") or "").lower()
+                        if not any(k in hay for k in cues):
+                            continue
+                        mv = _guess_movie_from_text(q)
+                        if mv:
+                            titles.append((_slugify(mv), mv))
+            except Exception:
+                pass
     except Exception:
         return titles
     return titles
