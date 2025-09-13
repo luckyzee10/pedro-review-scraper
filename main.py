@@ -490,6 +490,46 @@ def handle_telegram_commands(
                 send_telegram_message(token, chat_id, f"Markets refresh failed: {e}")
             continue
 
+        # Manually seed market titles via URLs (space/newline separated)
+        if used_cmd.startswith("/addmarketurl"):
+            urls = [u for u in re.split(r"\s+", arg) if u.startswith("http")]
+            if not urls:
+                send_telegram_message(token, chat_id, "Usage: /addmarketurl <url1> <url2> ...")
+                continue
+            added = 0
+            examples = []
+            for u in urls:
+                title = _infer_title_from_url(u, os.getenv("OPENAI_API_KEY", "").strip())
+                if not title:
+                    continue
+                slug = _slugify_title(title)
+                try:
+                    ts = datetime.now(timezone.utc).isoformat()
+                    conn.execute(
+                        "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(slug) DO UPDATE SET title=excluded.title, source=excluded.source, updated_at=excluded.updated_at",
+                        (slug, title, "manual", ts),
+                    )
+                    # Resolve TMDb canonical info if possible
+                    try:
+                        if tmdb_api_key:
+                            from movie_meta import fetch_tmdb_canonical
+                            from markets import upsert_market_meta
+
+                            ct, rd, tid = fetch_tmdb_canonical(title, tmdb_api_key)
+                            if ct or rd or tid:
+                                upsert_market_meta(conn, slug, ct, rd, tid)
+                    except Exception:
+                        pass
+                    conn.commit()
+                    added += 1
+                    if len(examples) < 5:
+                        examples.append(f"• {title}")
+                except Exception:
+                    continue
+            send_telegram_message(token, chat_id, f"Seeded {added} market titles.\n" + ("\n".join(examples) if examples else ""))
+            continue
+
         # List current catalog titles (optionally filter by substring)
         if used_cmd.startswith("/catalog"):
             catalog = load_catalog_index(conn)
@@ -1020,42 +1060,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-        # Manually seed market titles via URLs (space/newline separated)
-        if used_cmd.startswith("/addmarketurl"):
-            urls = [u for u in re.split(r"\s+", arg) if u.startswith("http")]
-            if not urls:
-                send_telegram_message(token, chat_id, "Usage: /addmarketurl <url1> <url2> ...")
-                continue
-            added = 0
-            examples = []
-            for u in urls:
-                title = _infer_title_from_url(u, os.getenv("OPENAI_API_KEY", "").strip())
-                if not title:
-                    continue
-                slug = _slugify_title(title)
-                try:
-                    ts = datetime.now(timezone.utc).isoformat()
-                    conn.execute(
-                        "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
-                        "ON CONFLICT(slug) DO UPDATE SET title=excluded.title, source=excluded.source, updated_at=excluded.updated_at",
-                        (slug, title, "manual", ts),
-                    )
-                    # Resolve TMDb canonical info if possible
-                    try:
-                        if tmdb_api_key:
-                            from movie_meta import fetch_tmdb_canonical
-                            from markets import upsert_market_meta
-
-                            ct, rd, tid = fetch_tmdb_canonical(title, tmdb_api_key)
-                            if ct or rd or tid:
-                                upsert_market_meta(conn, slug, ct, rd, tid)
-                    except Exception:
-                        pass
-                    conn.commit()
-                    added += 1
-                    if len(examples) < 5:
-                        examples.append(f"• {title}")
-                except Exception:
-                    continue
-            send_telegram_message(token, chat_id, f"Seeded {added} market titles.\n" + ("\n".join(examples) if examples else ""))
-            continue
