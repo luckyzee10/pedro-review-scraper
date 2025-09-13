@@ -123,19 +123,32 @@ def fetch_kalshi_titles_public(timeout: int = 15) -> List[Tuple[str, str]]:
     """
     titles: List[Tuple[str, str]] = []
     try:
-        url = "https://trading-api.kalshi.com/trade-api/v2/markets"
-        resp = requests.get(url, timeout=timeout)
-        if not resp.ok:
+        # Try new public hostname first
+        candidates = [
+            "https://api.elections.kalshi.com/trade-api/v2/markets",
+            "https://trading-api.kalshi.com/trade-api/v2/markets",
+        ]
+        data = None
+        for url in candidates:
+            try:
+                resp = requests.get(url, timeout=timeout)
+                if resp.ok:
+                    data = resp.json() or {}
+                    break
+            except Exception:
+                continue
+        if not data:
             return []
-        data = resp.json() or {}
         markets = data.get("markets") or data.get("data") or []
+        if isinstance(markets, dict):
+            markets = markets.get("markets", []) or []
         for m in markets:
             title = str(m.get("title") or m.get("name") or "")
             status = str(m.get("status") or "").lower()
             if status in {"closed", "settled", "resolved"}:
                 continue
             hay = title.lower()
-            if not any(k in hay for k in ("rotten tomatoes", "tomatometer", "rt score", "rt %")):
+            if not any(k in hay for k in ("rotten tomatoes", "tomatometer", "rt score", "rt %", "tomatoes", " rt ")):
                 continue
             mv = _guess_movie_from_text(title)
             if mv:
