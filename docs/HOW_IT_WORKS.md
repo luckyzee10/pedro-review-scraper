@@ -174,6 +174,12 @@ Catalog Commands
 - `/catalog <filter>`
   - Filters catalog titles by substring (case-insensitive) before listing.
 
+Markets Commands
+- `/markets`
+  - Lists titles detected from Polymarket/Kalshi open markets (used to gate ingestion), alphabetically.
+- `/markets <filter>`
+  - Filters market titles by substring.
+
 Release Dates & Sorting
 - Where release dates come from
   - The app maintains a rolling TMDb catalog and also looks up dates on demand for single movies. Dates are cached in SQLite `movies`.

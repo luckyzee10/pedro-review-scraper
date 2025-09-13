@@ -349,13 +349,14 @@ def handle_telegram_commands(
 
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
-        base_cmds = ["/status", "/movies", "/catalog", "/backfill", "/normalize", "/refreshcatalog", "/health"]
+        base_cmds = ["/status", "/movies", "/catalog", "/markets", "/backfill", "/normalize", "/refreshcatalog", "/health"]
         bot_cmds = []
         if bot_username:
             bot_cmds = [
                 f"/status@{bot_username.lower()}",
                 f"/movies@{bot_username.lower()}",
                 f"/catalog@{bot_username.lower()}",
+                f"/markets@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -373,6 +374,31 @@ def handle_telegram_commands(
             continue
 
         arg = text[len(used_cmd):].strip()
+
+        # List current market-matched titles (optional filter)
+        if used_cmd.startswith("/markets"):
+            markets = load_market_index(conn)
+            # Build (title, source) pairs; catalog cross-check is optional here
+            items = [(title, src) for (_slug, (title, src)) in markets.items()]
+            if arg:
+                q = arg.strip().lower()
+                items = [(t, s) for (t, s) in items if q in t.lower()]
+            if not items:
+                send_telegram_message(token, chat_id, "No market-matched titles yet.")
+                continue
+            # De-dup by title preferring polymarket label if both exist
+            best = {}
+            for t, s in items:
+                if t not in best or best[t] != "polymarket":
+                    best[t] = s
+            # Sort alphabetically
+            out = sorted(best.items(), key=lambda kv: kv[0].lower())
+            lines = ["📈 <b>Market Titles</b>"]
+            for t, s in out[:200]:
+                t_h = _html_escape(t)
+                lines.append(f"• <b>{t_h}</b> — {s}")
+            _send_batched_message(token, chat_id, lines)
+            continue
 
         # List current catalog titles (optionally filter by substring)
         if used_cmd.startswith("/catalog"):

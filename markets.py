@@ -92,21 +92,53 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
     return titles
 
 
+def fetch_kalshi_titles_public(timeout: int = 15) -> List[Tuple[str, str]]:
+    """Attempt to fetch markets from Kalshi v2 public endpoint (no auth).
+
+    Returns list of (slug, title). If unavailable, returns empty.
+    """
+    titles: List[Tuple[str, str]] = []
+    try:
+        url = "https://trading-api.kalshi.com/trade-api/v2/markets"
+        resp = requests.get(url, timeout=timeout)
+        if not resp.ok:
+            return []
+        data = resp.json() or {}
+        markets = data.get("markets") or data.get("data") or []
+        for m in markets:
+            title = str(m.get("title") or m.get("name") or "")
+            status = str(m.get("status") or "").lower()
+            if status in {"closed", "settled", "resolved"}:
+                continue
+            hay = title.lower()
+            if not any(k in hay for k in ("rotten tomatoes", "tomatometer", "rt score", "rt %")):
+                continue
+            mv = _guess_movie_from_text(title)
+            if mv:
+                titles.append((_slugify(mv), mv))
+    except Exception:
+        return []
+    return titles
+
+
 def fetch_kalshi_titles(api_key: Optional[str], api_secret: Optional[str], timeout: int = 15) -> List[Tuple[str, str]]:
     """Return list of (slug, title) from Kalshi markets if credentials provided.
 
     Kalshi typically requires auth; if missing, returns empty.
     """
-    if not api_key or not api_secret:
-        return []
     titles: List[Tuple[str, str]] = []
+    # Try public v2 first
+    titles.extend(fetch_kalshi_titles_public(timeout=timeout))
+    # If creds present, also try authenticated v1 as a fallback/supplement
+    if not api_key or not api_secret:
+        return titles
     try:
         # Basic markets list; Kalshi may change endpoints/fields
         url = "https://trading-api.kalshi.com/v1/markets"
         headers = {"KALSHI-API-KEY": api_key, "KALSHI-API-SECRET": api_secret}
         resp = requests.get(url, headers=headers, timeout=timeout)
         if not resp.ok:
-            return []
+            return titles
         data = resp.json() or {}
         markets = data.get("markets") or []
         for m in markets:
@@ -121,7 +153,7 @@ def fetch_kalshi_titles(api_key: Optional[str], api_secret: Optional[str], timeo
             if mv:
                 titles.append((_slugify(mv), mv))
     except Exception:
-        return []
+        return titles
     return titles
 
 
@@ -158,4 +190,3 @@ def refresh_market_titles(conn, kalshi_key: Optional[str], kalshi_secret: Option
 def load_market_index(conn) -> dict[str, tuple[str, str]]:
     rows = conn.execute("SELECT slug, title, source FROM market_titles").fetchall()
     return {slug: (title, source) for slug, title, source in rows}
-
