@@ -16,6 +16,7 @@ from typing import Iterable, List, Optional, Tuple
 
 import re
 import requests
+from sentiment import extract_market_title
 
 
 def ensure_tables(conn) -> None:
@@ -50,10 +51,17 @@ def _slugify(value: str) -> str:
     return v
 
 
-def _guess_movie_from_text(text: str) -> Optional[str]:
+def _guess_movie_from_text(text: str, openai_api_key: Optional[str] = None) -> Optional[str]:
     t = (text or "").strip()
     if not t:
         return None
+    # Preferred: ask OpenAI to extract the title when key present
+    try:
+        title = extract_market_title(t, api_key=openai_api_key)
+        if title:
+            return title
+    except Exception:
+        pass
     # Prefer quoted phrases
     m = re.search(r"[“\"]([^”\"]+)[”\"]", t)
     if m:
@@ -66,7 +74,7 @@ def _guess_movie_from_text(text: str) -> Optional[str]:
     return " ".join(t.split()[:6])
 
 
-def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
+def fetch_polymarket_titles(timeout: int = 15, openai_api_key: Optional[str] = None) -> List[Tuple[str, str]]:
     """Return list of (slug, title) from active Polymarket markets about RT scores.
 
     Endpoint is best-effort; Polymarket has multiple APIs. We try a public one.
@@ -108,7 +116,7 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
             )
             if not any(k in hay for k in cues):
                 continue
-            mv = _guess_movie_from_text(q)
+            mv = _guess_movie_from_text(q, openai_api_key)
             if mv:
                 titles.append((_slugify(mv), mv))
         # Additionally, perform explicit search queries to catch filtered results
@@ -136,7 +144,7 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
                     hay2 = q2.lower()
                     if not any(k in hay2 for k in cues):
                         continue
-                    mv2 = _guess_movie_from_text(q2)
+                    mv2 = _guess_movie_from_text(q2, openai_api_key)
                     if mv2:
                         s2 = _slugify(mv2)
                         if s2 not in seen:
@@ -172,7 +180,7 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
                         hay = q.lower() + " " + str(m.get("description") or "").lower()
                         if not any(k in hay for k in cues):
                             continue
-                        mv = _guess_movie_from_text(q)
+                        mv = _guess_movie_from_text(q, openai_api_key)
                         if mv:
                             titles.append((_slugify(mv), mv))
             except Exception:
@@ -182,7 +190,7 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
     return titles
 
 
-def fetch_kalshi_titles_public(timeout: int = 15) -> List[Tuple[str, str]]:
+def fetch_kalshi_titles_public(timeout: int = 15, openai_api_key: Optional[str] = None) -> List[Tuple[str, str]]:
     """Attempt to fetch markets from Kalshi v2 public endpoint (no auth).
 
     Returns list of (slug, title). If unavailable, returns empty.
@@ -216,7 +224,7 @@ def fetch_kalshi_titles_public(timeout: int = 15) -> List[Tuple[str, str]]:
             hay = (title or "").lower() + " " + str(m.get("description") or "").lower()
             if not any(k in hay for k in ("rotten tomatoes", "tomatometer", "rt score", "rt %", "tomatoes", " rt ")):
                 continue
-            mv = _guess_movie_from_text(title)
+            mv = _guess_movie_from_text(title, openai_api_key)
             if mv:
                 titles.append((_slugify(mv), mv))
     except Exception:
@@ -224,14 +232,14 @@ def fetch_kalshi_titles_public(timeout: int = 15) -> List[Tuple[str, str]]:
     return titles
 
 
-def fetch_kalshi_titles(api_key: Optional[str], api_secret: Optional[str], timeout: int = 15) -> List[Tuple[str, str]]:
+def fetch_kalshi_titles(api_key: Optional[str], api_secret: Optional[str], timeout: int = 15, openai_api_key: Optional[str] = None) -> List[Tuple[str, str]]:
     """Return list of (slug, title) from Kalshi markets if credentials provided.
 
     Kalshi typically requires auth; if missing, returns empty.
     """
     titles: List[Tuple[str, str]] = []
     # Try public v2 first
-    titles.extend(fetch_kalshi_titles_public(timeout=timeout))
+    titles.extend(fetch_kalshi_titles_public(timeout=timeout, openai_api_key=openai_api_key))
     # If creds present, also try authenticated v1 as a fallback/supplement
     if not api_key or not api_secret:
         return titles
@@ -252,7 +260,7 @@ def fetch_kalshi_titles(api_key: Optional[str], api_secret: Optional[str], timeo
             hay = title.lower()
             if not any(k in hay for k in ("rotten tomatoes", "tomatometer", "rt score", "rt %")):
                 continue
-            mv = _guess_movie_from_text(title)
+            mv = _guess_movie_from_text(title, openai_api_key)
             if mv:
                 titles.append((_slugify(mv), mv))
     except Exception:
@@ -260,7 +268,7 @@ def fetch_kalshi_titles(api_key: Optional[str], api_secret: Optional[str], timeo
     return titles
 
 
-def refresh_market_titles(conn, kalshi_key: Optional[str], kalshi_secret: Optional[str], tmdb_api_key: Optional[str] = None) -> int:
+def refresh_market_titles(conn, kalshi_key: Optional[str], kalshi_secret: Optional[str], tmdb_api_key: Optional[str] = None, openai_api_key: Optional[str] = None) -> int:
     ensure_tables(conn)
     upserted = 0
     seen = set()
@@ -279,11 +287,11 @@ def refresh_market_titles(conn, kalshi_key: Optional[str], kalshi_secret: Option
         upserted += 1
 
     # Polymarket (public)
-    for slug, title in fetch_polymarket_titles():
+    for slug, title in fetch_polymarket_titles(openai_api_key=openai_api_key):
         upsert("polymarket", slug, title)
 
     # Kalshi (public v2 + optional auth)
-    for slug, title in fetch_kalshi_titles(kalshi_key, kalshi_secret):
+    for slug, title in fetch_kalshi_titles(kalshi_key, kalshi_secret, openai_api_key=openai_api_key):
         upsert("kalshi", slug, title)
 
     conn.commit()

@@ -452,6 +452,7 @@ def handle_telegram_commands(
                     os.getenv("KALSHI_API_KEY", "").strip(),
                     os.getenv("KALSHI_API_SECRET", "").strip(),
                     os.getenv("TMDB_API_KEY", "").strip(),
+                    os.getenv("OPENAI_API_KEY", "").strip(),
                 )
                 msize = len(load_market_index(conn))
                 send_telegram_message(
@@ -878,7 +879,7 @@ def main() -> None:
     # Initial market titles refresh and load (now primary gating)
     last_market_refresh = 0.0
     try:
-        n = refresh_market_titles(conn, kalshi_key, kalshi_secret, tmdb_api_key)
+        n = refresh_market_titles(conn, kalshi_key, kalshi_secret, tmdb_api_key, os.getenv("OPENAI_API_KEY", "").strip())
         print(f"[+] Market titles refresh: upserted {n}")
     except Exception as e:
         print(f"[!] Market titles refresh failed: {e}")
@@ -894,7 +895,7 @@ def main() -> None:
         # Refresh market titles periodically (and update canon via TMDb)
         try:
             if time.time() - last_market_refresh >= MARKET_REFRESH_SECONDS:
-                n = refresh_market_titles(conn, kalshi_key, kalshi_secret, tmdb_api_key)
+                n = refresh_market_titles(conn, kalshi_key, kalshi_secret, tmdb_api_key, os.getenv("OPENAI_API_KEY", "").strip())
                 market_index = load_market_index(conn)
                 market_canon = load_market_canon(conn)
                 last_market_refresh = time.time()
