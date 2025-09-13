@@ -179,6 +179,8 @@ Markets Commands
   - Lists titles detected from Polymarket/Kalshi open markets (used to gate ingestion), alphabetically.
 - `/markets <filter>`
   - Filters market titles by substring.
+ - `/refreshmarkets`
+   - Forces an immediate markets refresh from Polymarket (public) and Kalshi (public v2; plus v1 if creds are set). Replies with upserted count and total titles.
 
 Release Dates & Sorting
 - Where release dates come from

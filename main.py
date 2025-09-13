@@ -354,7 +354,7 @@ def handle_telegram_commands(
 
         # Basic parsing for command + optional argument
         tlow = text.strip().lower()
-        base_cmds = ["/status", "/movies", "/catalog", "/markets", "/backfill", "/normalize", "/refreshcatalog", "/health"]
+        base_cmds = ["/status", "/movies", "/catalog", "/markets", "/refreshmarkets", "/backfill", "/normalize", "/refreshcatalog", "/health"]
         bot_cmds = []
         if bot_username:
             bot_cmds = [
@@ -362,6 +362,7 @@ def handle_telegram_commands(
                 f"/movies@{bot_username.lower()}",
                 f"/catalog@{bot_username.lower()}",
                 f"/markets@{bot_username.lower()}",
+                f"/refreshmarkets@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -864,3 +865,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+        # Force markets refresh
+        if used_cmd.startswith("/refreshmarkets"):
+            try:
+                n = refresh_market_titles(conn, os.getenv("KALSHI_API_KEY", "").strip(), os.getenv("KALSHI_API_SECRET", "").strip(), os.getenv("TMDB_API_KEY", "").strip())
+                msize = len(load_market_index(conn))
+                send_telegram_message(token, chat_id, f"Markets refreshed: upserted {n}. Total market titles now {msize}.")
+            except Exception as e:
+                send_telegram_message(token, chat_id, f"Markets refresh failed: {e}")
+            continue

@@ -76,24 +76,37 @@ def fetch_polymarket_titles(timeout: int = 15) -> List[Tuple[str, str]]:
         # Common public endpoint pattern
         resp = requests.get(
             "https://gamma-api.polymarket.com/markets",
-            params={"limit": 1000},
+            params={"limit": 1000, "closed": "false"},
             timeout=timeout,
         )
         if not resp.ok:
             return titles
         data = resp.json() or {}
-        markets = data.get("data") or data.get("markets") or data
+        markets = data.get("markets") or data.get("data") or []
         if isinstance(markets, dict):
-            markets = markets.get("markets", [])
+            markets = markets.get("markets", []) or []
         for m in markets or []:
             # Try common fields
-            q = str(m.get("question") or m.get("title") or m.get("name") or "")
-            status = str(m.get("status") or m.get("closed") or "").lower()
-            is_open = "close" not in status and status not in {"closed", "resolved"}
+            q = str(m.get("question") or m.get("title") or m.get("name") or m.get("condition") or "")
+            closed = m.get("closed")
+            status = str(m.get("status") or "").lower()
+            is_open = not closed and status not in {"closed", "resolved", "settled"}
             if not is_open:
                 continue
             hay = q.lower()
-            if not any(k in hay for k in ("rotten tomatoes", "tomatometer", "rt score", "rt %")):
+            # broader cues for RT/tomatometer
+            cues = (
+                "rotten tomatoes",
+                "tomatometer",
+                "rt score",
+                "rt %",
+                " rt ",
+                "(rt",
+                "rt)",
+                "rt-",
+                "tomatoes",
+            )
+            if not any(k in hay for k in cues):
                 continue
             mv = _guess_movie_from_text(q)
             if mv:
