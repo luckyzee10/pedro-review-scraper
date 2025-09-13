@@ -26,15 +26,16 @@ Components
   - Handles simple Telegram commands via `getUpdates` (see below).
 
 Data Flow
-1) Fetch all feeds → list of entries.
-2) Filter: review candidates only.
-3) Duplicate check: `SELECT 1 FROM reviews WHERE outlet=? AND headline=?`.
-4) Movie title extraction heuristics (quoted phrases, “Review:” patterns, separators).
-5) Sentiment classification via OpenAI (temperature 0, tiny max tokens).
-6) Insert into SQLite: `reviews(outlet, movie, headline, sentiment, timestamp)`.
-7) Update in‑memory aggregate counts for that movie.
-8) Send Telegram message with current per‑movie tally.
-9) Include a Rotten Tomatoes‑like freshness percentage: Positive / (Positive + Negative).
+1) Refresh TMDb catalog of movies releasing in a rolling window (default: from 5 days ago to 90 days ahead). Stored in the `catalog` table with slug+title+date.
+2) Fetch all feeds → list of entries.
+3) Filter: accept only entries with strong “review” cues (review/critic review/film review/our take on/verdict/★/N stars).
+4) Strict match: keep an entry only if its URL path contains a slug matching one of the catalog titles.
+5) Duplicate check: `SELECT 1 FROM reviews WHERE outlet=? AND headline=?`.
+6) Sentiment classification via OpenAI (temperature 0, tiny max tokens).
+7) Insert into SQLite: `reviews(outlet, movie, headline, sentiment, timestamp)` and cache release date when available.
+8) Update in‑memory aggregate counts for that movie.
+9) Send Telegram message with current per‑movie tally.
+10) Include a Rotten Tomatoes‑like freshness percentage: Positive / (Positive + Negative).
 
 De‑duplication
 - Enforced by a unique index on `(outlet, headline)`.
@@ -169,7 +170,7 @@ Data Hygiene Commands
 
 Release Dates & Sorting
 - Where release dates come from
-  - The app attempts to look up release dates via TMDb when a new movie title appears and caches the result in SQLite table `movies`.
+  - The app maintains a rolling TMDb catalog and also looks up dates on demand for single movies. Dates are cached in SQLite `movies`.
   - Set `TMDB_API_KEY` to enable lookups. Without it, release dates remain unknown and summaries fall back to a generic order.
 - Sorting rule for summaries
   - Future releases (today or later): ordered from soonest → farthest.

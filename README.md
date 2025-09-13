@@ -2,6 +2,7 @@ Movie Review Sentiment Notifier (Cloud Ready)
 
 What this does
 - Polls a set of movie/film RSS feeds every 2 minutes
+- Builds a rolling catalog of upcoming/recent films from TMDb and only accepts reviews whose URL matches a catalog title
 - Classifies each new headline/snippet with OpenAI (Positive/Negative/Neutral)
 - Stores results in SQLite (reviews table)
 - Sends Telegram alerts with rolling per-movie sentiment counts
@@ -86,6 +87,7 @@ Notes
 - Freshness: Neutral reviews are excluded from the percentage denominator; shows N/A until at least one Positive or Negative exists.
  - Minimum reviews for percentage: requires at least 3 (Positive+Negative) reviews to show a percentage; configure with `MIN_REVIEWS_FOR_PERCENT`.
  - Filtering: the scraper only accepts items that look like reviews based on cues in the title/URL such as “review”, “critic review”, “film review”, “our take on”, “verdict”, or star ratings (★ / “3 stars”).
+ - Catalog gating: only keeps entries whose URL path contains the slug of a film in a rolling TMDb window (default: 5 days past → 90 days ahead). Configure via `CATALOG_PAST_DAYS`, `CATALOG_FUTURE_DAYS`, `CATALOG_REFRESH_SECONDS`.
 
  Learn more
 - See docs/HOW_IT_WORKS.md for a concise overview of architecture, data flow, configuration, and operations.

@@ -25,12 +25,21 @@ from dotenv import load_dotenv
 from scraper import FEEDS, fetch_all, ScrapedItem
 from sentiment import classify_sentiment
 from telegram import send_telegram_message, fetch_updates, get_me, delete_webhook
-from movie_meta import ensure_release_date, ensure_tables as ensure_movie_tables
+from movie_meta import (
+    ensure_release_date,
+    ensure_tables as ensure_movie_tables,
+    refresh_catalog_window,
+    load_catalog_index,
+    match_movie_from_url,
+)
 
 
 DB_PATH = os.getenv("REVIEW_DB_PATH", "reviews.db")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "120"))  # seconds
 MIN_REVIEWS_FOR_PERCENT = int(os.getenv("MIN_REVIEWS_FOR_PERCENT", "3"))
+CATALOG_PAST_DAYS = int(os.getenv("CATALOG_PAST_DAYS", "5"))
+CATALOG_FUTURE_DAYS = int(os.getenv("CATALOG_FUTURE_DAYS", "90"))
+CATALOG_REFRESH_SECONDS = int(os.getenv("CATALOG_REFRESH_SECONDS", "21600"))  # 6h
 
 
 def init_db(path: str = DB_PATH) -> sqlite3.Connection:
@@ -500,6 +509,39 @@ def handle_telegram_commands(
         _kv_set(conn, "tg_offset", str(int(last_update_id) + 1))
 
 
+def refresh_catalog_if_needed(conn: sqlite3.Connection, tmdb_api_key: str | None) -> Dict[str, Tuple[str, str | None]]:
+    """Refresh windowed TMDb catalog on a schedule and return the index.
+
+    If no TMDb key is present, returns whatever is in the catalog (may be empty).
+    """
+    from datetime import datetime, timezone
+
+    last = _kv_get(conn, "catalog_last_refresh")
+    now = datetime.now(timezone.utc)
+    do_refresh = True
+    if last:
+        try:
+            last_dt = datetime.fromisoformat(last)
+            do_refresh = (now - last_dt).total_seconds() >= CATALOG_REFRESH_SECONDS
+        except Exception:
+            do_refresh = True
+
+    if tmdb_api_key and do_refresh:
+        try:
+            n = refresh_catalog_window(
+                conn,
+                api_key=tmdb_api_key,
+                days_past=CATALOG_PAST_DAYS,
+                days_future=CATALOG_FUTURE_DAYS,
+            )
+            _kv_set(conn, "catalog_last_refresh", now.isoformat())
+            print(f"[+] Catalog refresh: upserted {n} titles")
+        except Exception as e:
+            print(f"[!] Catalog refresh failed: {e}")
+
+    return load_catalog_index(conn)
+
+
 def main() -> None:
     load_dotenv()  # Load .env file if present
 
@@ -531,8 +573,14 @@ def main() -> None:
     bot_username = me.get("username") if isinstance(me, dict) else None
 
     print("[+] Starting poll loop. Interval:", POLL_SECONDS, "seconds")
+    catalog_index = refresh_catalog_if_needed(conn, tmdb_api_key)
     while not stop:
         start = time.time()
+        # Periodically refresh catalog (e.g., every 6 hours)
+        try:
+            catalog_index = refresh_catalog_if_needed(conn, tmdb_api_key)
+        except Exception:
+            pass
         try:
             items = fetch_all(FEEDS)
         except Exception as e:
@@ -547,12 +595,21 @@ def main() -> None:
             if row_exists(conn, outlet, headline):
                 continue
 
-            # Determine movie title
-            movie = extract_movie_title(headline, it.summary, it.link)
+            # Match movie via TMDb window catalog using URL (strict gate)
+            matched = match_movie_from_url(it.link or headline, catalog_index)
+            if not matched:
+                # Skip items whose URL doesn't contain a known movie in our window
+                continue
+            movie, rel_date = matched
 
             # Try to resolve and cache release date for new movies (best-effort)
             try:
-                if tmdb_api_key:
+                if rel_date:
+                    # Cache into movies table for sorting if we already have it
+                    from movie_meta import cache_release_date
+
+                    cache_release_date(conn, movie, rel_date)
+                elif tmdb_api_key:
                     ensure_release_date(conn, movie, tmdb_api_key)
             except Exception:
                 pass
