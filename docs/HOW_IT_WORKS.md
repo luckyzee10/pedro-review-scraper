@@ -183,6 +183,16 @@ Markets Commands
   - Forces an immediate markets refresh from Polymarket (public) and Kalshi (public v2; plus v1 if creds are set). Replies with upserted count and total titles.
 - `/normalizemarkets`
   - Rewrites market titles to canonical TMDb titles where possible and removes ticker-like entries; de-duplicates display names.
+- `/normalizereviews`
+  - Updates existing `reviews.movie` values to the canonical titles (based on market slugs and TMDb canonicalization) for historical consistency.
+
+Normalization Playbook
+- Seed market titles (if you have URLs): `/addmarketurl <urls...>`
+- Refresh markets from APIs: `/refreshmarkets`
+- Normalize market titles: `/normalizemarkets`
+- Backfill missing release dates (optional): `/backfill`
+- Normalize review rows to canonical titles: `/normalizereviews`
+- Verify: `/markets` and `/status`
 
 Release Dates & Sorting
 - Where release dates come from

@@ -404,6 +404,7 @@ def handle_telegram_commands(
             "/addmarketurl",
             "/refreshmarkets",
             "/normalizemarkets",
+            "/normalizereviews",
             "/backfill",
             "/normalize",
             "/refreshcatalog",
@@ -420,6 +421,7 @@ def handle_telegram_commands(
                 f"/refreshmarkets@{bot_username.lower()}",
                 f"/addmarketurl@{bot_username.lower()}",
                 f"/normalizemarkets@{bot_username.lower()}",
+                f"/normalizereviews@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -579,6 +581,54 @@ def handle_telegram_commands(
                     continue
 
             msg = f"Normalized {fixed_rows} market entries. Titles changed: {titles_changed}."
+            if examples:
+                msg += "\nExamples:\n" + "\n".join(_html_escape(x) for x in examples)
+            send_telegram_message(token, chat_id, msg)
+            continue
+
+        # Normalize review rows' movie field to canonical titles from markets/TMDb
+        if used_cmd.startswith("/normalizereviews"):
+            markets = load_market_index(conn)
+            mcanon = load_market_canon(conn)
+            changed_rows = 0
+            titles_changed = 0
+            examples = []
+            # Get distinct movies from reviews
+            dmovies = conn.execute("SELECT DISTINCT movie FROM reviews").fetchall()
+            for (old_title,) in dmovies:
+                old_title_s = str(old_title)
+                slug = _slugify_title(old_title_s)
+                new_title = None
+                # Prefer canonical TMDb title
+                ct, rd, tid = mcanon.get(slug, (None, None, None))
+                if ct:
+                    new_title = ct
+                elif slug in markets:
+                    new_title = markets[slug][0]
+                # Skip if nothing to map
+                if not new_title or new_title == old_title_s or _is_ticker_like(new_title):
+                    continue
+                try:
+                    cur = conn.execute("UPDATE reviews SET movie=? WHERE movie=?", (new_title, old_title_s))
+                    conn.commit()
+                    count = cur.rowcount or 0
+                    if count > 0:
+                        changed_rows += count
+                        titles_changed += 1
+                        if len(examples) < 6:
+                            examples.append(f"• {old_title_s} → {new_title} ({count})")
+                    # Cache release date if we have it
+                    try:
+                        if rd:
+                            from movie_meta import cache_release_date
+
+                            cache_release_date(conn, new_title, rd)
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+
+            msg = f"Normalized review titles in {changed_rows} rows. Titles changed: {titles_changed}."
             if examples:
                 msg += "\nExamples:\n" + "\n".join(_html_escape(x) for x in examples)
             send_telegram_message(token, chat_id, msg)
