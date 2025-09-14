@@ -283,12 +283,15 @@ def _infer_title_from_url(url: str, openai_api_key: str | None) -> str | None:
         segs = [s for s in (p.path or "").split("/") if s]
         # Combine last 2 segments as context if present
         context = " ".join(segs[-2:]) if segs else url
-        # Prefer LLM extraction
+        # Prefer LLM extraction; reject ticker-like
         title = extract_market_title(f"URL: {url}\nContext: {context}", api_key=openai_api_key)
-        if title:
+        if title and not _is_ticker_like(title):
             return title
         # Fallback: clean typical RT suffixes
         last = segs[-1] if segs else url
+        # Kalshi pattern: /markets/<ticker>/<description>/<ticker>
+        if len(segs) >= 3 and (segs[-3].lower().startswith("kxr") or segs[-1].lower().startswith("kxr")):
+            last = segs[-2]
         last = re.sub(r"-rotten-?tomatoes-?score.*$", "", last, flags=re.I)
         last = re.sub(r"rt-?score.*$", "", last, flags=re.I)
         last = re.sub(r"^rt-", "", last, flags=re.I)
@@ -436,25 +439,25 @@ def handle_telegram_commands(
 
         arg = text[len(used_cmd):].strip()
 
-        # List current market-matched titles (optional filter), de-duped by canonical title
+        # List current market-matched titles (optional filter), dedup by TMDb id/title and roll up sources
         if used_cmd.startswith("/markets"):
             markets = load_market_index(conn)
             mcanon = load_market_canon(conn)
-            # Build display titles preferring canonical TMDb title
-            pairs = []
+            # Group by (tmdb_id if present else display title)
+            groups: dict[tuple, dict] = {}
             for slug, (title, src) in markets.items():
-                ct = (mcanon.get(slug) or (None, None, None))[0]
+                ct, rd, tid = mcanon.get(slug, (None, None, None))
                 disp = ct or title
-                pairs.append((disp, src))
+                key = (tid or None, (disp or '').lower())
+                g = groups.setdefault(key, {"title": disp, "sources": set()})
+                g["sources"].add(src)
             if arg:
                 q = arg.strip().lower()
-                pairs = [(t, s) for (t, s) in pairs if q in t.lower()]
-            # De-dup by display title preferring polymarket if both exist
-            best = {}
-            for t, s in pairs:
-                if t not in best or best[t] != "polymarket":
-                    best[t] = s
-            items = sorted(best.items(), key=lambda kv: kv[0].lower())
+                groups = {k: v for k, v in groups.items() if q in (v["title"] or "").lower()}
+            items = sorted(
+                ((v["title"], ", ".join(sorted(v["sources"]))) for v in groups.values()),
+                key=lambda kv: kv[0].lower(),
+            )
             if not items:
                 # Attempt on-demand refresh when empty
                 try:
@@ -467,16 +470,17 @@ def handle_telegram_commands(
                     )
                     markets = load_market_index(conn)
                     mcanon = load_market_canon(conn)
-                    pairs = []
+                    groups = {}
                     for slug, (title, src) in markets.items():
-                        ct = (mcanon.get(slug) or (None, None, None))[0]
+                        ct, rd, tid = mcanon.get(slug, (None, None, None))
                         disp = ct or title
-                        pairs.append((disp, src))
-                    best = {}
-                    for t, s in pairs:
-                        if t not in best or best[t] != "polymarket":
-                            best[t] = s
-                    items = sorted(best.items(), key=lambda kv: kv[0].lower())
+                        key = (tid or None, (disp or '').lower())
+                        g = groups.setdefault(key, {"title": disp, "sources": set()})
+                        g["sources"].add(src)
+                    items = sorted(
+                        ((v["title"], ", ".join(sorted(v["sources"]))) for v in groups.values()),
+                        key=lambda kv: kv[0].lower(),
+                    )
                 except Exception:
                     items = []
             if not items:
