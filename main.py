@@ -38,6 +38,7 @@ from markets import (
     refresh_market_titles,
     load_market_index,
     load_market_canon,
+    upsert_market_meta,
 )
 
 
@@ -299,6 +300,18 @@ def _infer_title_from_url(url: str, openai_api_key: str | None) -> str | None:
         return None
 
 
+def _is_ticker_like(title: str) -> bool:
+    t = (title or "").strip()
+    if not t or " " in t:
+        return False
+    low = t.lower()
+    if low.startswith("kxrt") or low.startswith("kxr"):
+        return True
+    if len(low) >= 8 and low.isalnum():
+        return True
+    return False
+
+
 def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
@@ -387,6 +400,7 @@ def handle_telegram_commands(
             "/markets",
             "/addmarketurl",
             "/refreshmarkets",
+            "/normalizemarkets",
             "/backfill",
             "/normalize",
             "/refreshcatalog",
@@ -402,6 +416,7 @@ def handle_telegram_commands(
                 f"/markets@{bot_username.lower()}",
                 f"/refreshmarkets@{bot_username.lower()}",
                 f"/addmarketurl@{bot_username.lower()}",
+                f"/normalizemarkets@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -504,6 +519,65 @@ def handle_telegram_commands(
                 )
             except Exception as e:
                 send_telegram_message(token, chat_id, f"Markets refresh failed: {e}")
+            continue
+
+        # Normalize market titles (dedupe tickers to canonical TMDb titles)
+        if used_cmd.startswith("/normalizemarkets"):
+            fixed_rows = 0
+            titles_changed = 0
+            examples = []
+            rows = conn.execute("SELECT slug, title, source FROM market_titles").fetchall()
+            for slug, title, source in rows:
+                ct_tuple = (load_market_canon(conn).get(slug) or (None, None, None))
+                canon_title = ct_tuple[0]
+                if not canon_title:
+                    # Try to fetch via TMDb if not already cached
+                    try:
+                        if tmdb_api_key:
+                            from movie_meta import fetch_tmdb_canonical
+
+                            ct, rd, tid = fetch_tmdb_canonical(title, tmdb_api_key)
+                            if ct or rd or tid:
+                                upsert_market_meta(conn, slug, ct, rd, tid)
+                                canon_title = ct or canon_title
+                    except Exception:
+                        pass
+                # If no canon title, skip
+                if not canon_title:
+                    continue
+                new_title = canon_title
+                new_slug = _slugify_title(new_title)
+                if new_title == title and new_slug == slug and not _is_ticker_like(title):
+                    continue
+                try:
+                    ts = datetime.now(timezone.utc).isoformat()
+                    # Upsert under new slug
+                    conn.execute(
+                        "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(slug) DO UPDATE SET title=excluded.title, source=excluded.source, updated_at=excluded.updated_at",
+                        (new_slug, new_title, source, ts),
+                    )
+                    # Move or update meta
+                    ct, rd, tid = (load_market_canon(conn).get(slug) or (None, None, None))
+                    if ct or rd or tid:
+                        upsert_market_meta(conn, new_slug, ct, rd, tid)
+                    # If slug changed, delete old row to avoid duplicates
+                    if new_slug != slug:
+                        conn.execute("DELETE FROM market_titles WHERE slug = ?", (slug,))
+                        conn.execute("DELETE FROM market_meta WHERE slug = ?", (slug,))
+                    conn.commit()
+                    fixed_rows += 1
+                    if len(examples) < 6:
+                        examples.append(f"• {title} → {new_title}")
+                    if new_title != title:
+                        titles_changed += 1
+                except Exception:
+                    continue
+
+            msg = f"Normalized {fixed_rows} market entries. Titles changed: {titles_changed}."
+            if examples:
+                msg += "\nExamples:\n" + "\n".join(_html_escape(x) for x in examples)
+            send_telegram_message(token, chat_id, msg)
             continue
 
         # Manually seed market titles via URLs (space/newline separated)
