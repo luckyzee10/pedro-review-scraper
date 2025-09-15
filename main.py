@@ -445,46 +445,58 @@ def handle_telegram_commands(
         if used_cmd.startswith("/markets"):
             markets = load_market_index(conn)
             mcanon = load_market_canon(conn)
-            # Group by (tmdb_id if present else display title)
+            # Group by TMDb id if present; else by base title before colon
             groups: dict[tuple, dict] = {}
             for slug, (title, src) in markets.items():
                 ct, rd, tid = mcanon.get(slug, (None, None, None))
-                disp = ct or title
-                key = (tid or None, (disp or '').lower())
-                g = groups.setdefault(key, {"title": disp, "sources": set()})
+                raw = ct or title or ""
+                base = raw.split(":", 1)[0].strip().lower()
+                key = (tid or None, base)
+                g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid})
+                g["titles"].add(raw)
                 g["sources"].add(src)
             if arg:
                 q = arg.strip().lower()
-                groups = {k: v for k, v in groups.items() if q in (v["title"] or "").lower()}
-            items = sorted(
-                ((v["title"], ", ".join(sorted(v["sources"]))) for v in groups.values()),
-                key=lambda kv: kv[0].lower(),
-            )
+                groups = {
+                    k: v for k, v in groups.items()
+                    if any(q in t.lower() for t in v["titles"])
+                }
+            # Choose the longest title in each group for display
+            items = []
+            for v in groups.values():
+                disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
+                sources_str = ", ".join(sorted(v["sources"]))
+                items.append((disp, sources_str))
+            items.sort(key=lambda kv: kv[0].lower())
             if not items:
                 # Attempt on-demand refresh when empty
-                try:
-                    n = refresh_market_titles(
-                        conn,
-                        os.getenv("KALSHI_API_KEY", "").strip(),
-                        os.getenv("KALSHI_API_SECRET", "").strip(),
-                        os.getenv("TMDB_API_KEY", "").strip(),
-                        os.getenv("OPENAI_API_KEY", "").strip(),
-                    )
-                    markets = load_market_index(conn)
-                    mcanon = load_market_canon(conn)
-                    groups = {}
-                    for slug, (title, src) in markets.items():
-                        ct, rd, tid = mcanon.get(slug, (None, None, None))
-                        disp = ct or title
-                        key = (tid or None, (disp or '').lower())
-                        g = groups.setdefault(key, {"title": disp, "sources": set()})
-                        g["sources"].add(src)
-                    items = sorted(
-                        ((v["title"], ", ".join(sorted(v["sources"]))) for v in groups.values()),
-                        key=lambda kv: kv[0].lower(),
-                    )
-                except Exception:
-                    items = []
+            try:
+                n = refresh_market_titles(
+                    conn,
+                    os.getenv("KALSHI_API_KEY", "").strip(),
+                    os.getenv("KALSHI_API_SECRET", "").strip(),
+                    os.getenv("TMDB_API_KEY", "").strip(),
+                    os.getenv("OPENAI_API_KEY", "").strip(),
+                )
+                markets = load_market_index(conn)
+                mcanon = load_market_canon(conn)
+                groups = {}
+                for slug, (title, src) in markets.items():
+                    ct, rd, tid = mcanon.get(slug, (None, None, None))
+                    raw = ct or title or ""
+                    base = raw.split(":", 1)[0].strip().lower()
+                    key = (tid or None, base)
+                    g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid})
+                    g["titles"].add(raw)
+                    g["sources"].add(src)
+                items = []
+                for v in groups.values():
+                    disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
+                    sources_str = ", ".join(sorted(v["sources"]))
+                    items.append((disp, sources_str))
+                items.sort(key=lambda kv: kv[0].lower())
+            except Exception:
+                items = []
             if not items:
                 # Provide debug counts by source to help diagnose
                 try:
@@ -697,12 +709,20 @@ def handle_telegram_commands(
                 if not title:
                     continue
                 slug = _slugify_title(title)
+                # Infer source from URL host
+                try:
+                    from urllib.parse import urlparse
+
+                    host = (urlparse(u).netloc or "").lower()
+                    src = "polymarket" if "polymarket" in host else ("kalshi" if "kalshi" in host else "manual")
+                except Exception:
+                    src = "manual"
                 try:
                     ts = datetime.now(timezone.utc).isoformat()
                     conn.execute(
                         "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
                         "ON CONFLICT(slug) DO UPDATE SET title=excluded.title, source=excluded.source, updated_at=excluded.updated_at",
-                        (slug, title, "manual", ts),
+                        (slug, title, src, ts),
                     )
                     # Resolve TMDb canonical info if possible
                     try:
