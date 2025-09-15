@@ -516,6 +516,7 @@ def handle_telegram_commands(
             "/movies",
             "/catalog",
             "/markets",
+            "/scanrules",
             "/addmarketurl",
             "/refreshmarkets",
             "/normalizemarkets",
@@ -537,6 +538,7 @@ def handle_telegram_commands(
                 f"/movies@{bot_username.lower()}",
                 f"/catalog@{bot_username.lower()}",
                 f"/markets@{bot_username.lower()}",
+                f"/scanrules@{bot_username.lower()}",
                 f"/refreshmarkets@{bot_username.lower()}",
                 f"/addmarketurl@{bot_username.lower()}",
                 f"/normalizemarkets@{bot_username.lower()}",
@@ -918,6 +920,7 @@ def handle_telegram_commands(
                 "/normalizemarkets — Strip tickers, merge Title vs Title: Subtitle",
                 "/normalizereviews — Rewrite reviews to canonical titles",
                 "/relinkreviews &lt;movie&gt; — Prune false positives (adds tombstones)",
+                "/scanrules — Show what gets accepted",
                 "/backfill — Fill missing release dates via TMDb",
                 "/catalog [filter] — TMDb window (info)",
                 "/refreshcatalog — Refresh TMDb window (info)",
@@ -934,6 +937,47 @@ def handle_telegram_commands(
                 "/setcanonical “<title>” <tmdb_id> — pin TMDb entry",
                 "/setrelease “<title>” <YYYY-MM-DD> — override date",
             ]
+            _send_batched_message(token, chat_id, lines)
+            continue
+
+        # Scan rules overview
+        if used_cmd.startswith("/scanrules"):
+            from urllib.parse import urlparse
+
+            # Outlets
+            hosts = []
+            for u in FEEDS:
+                try:
+                    hosts.append((urlparse(u).netloc or u).lower())
+                except Exception:
+                    hosts.append(u)
+            hosts = sorted(set(hosts))
+            # Films (market titles)
+            markets = load_market_index(conn)
+            mcanon = load_market_canon(conn)
+            films = []
+            for slug, (t, src) in markets.items():
+                ct = (mcanon.get(slug) or (None, None, None))[0]
+                films.append((ct or t or slug, src))
+            films.sort(key=lambda x: x[0].lower())
+
+            lines = [
+                "🔎 <b>Scanner Rules</b>",
+                f"Interval: {POLL_SECONDS}s",
+                f"Outlets ({len(hosts)}): " + ", ".join(hosts[:15]) + (" …" if len(hosts) > 15 else ""),
+                "Review cues: ‘review’, ‘film review’, ‘critic review’, ‘verdict’, stars (★/‘3 stars’)",
+                "Gating: must match a tracked film (market/seeded)",
+                "Match logic:",
+                "• URL alias slugs (full, base-before-colon, no article, roman↔number)",
+                "• OR headline phrase (word‑boundaries)",
+                "• Ambiguous short titles (HIM/IT/US/UP/HER/ME/YOU): headline must quote the title",
+                "De‑dup + tombstones: (outlet, headline) + ignored table to block re‑ingest",
+                "Films (sample):",
+            ]
+            for name, src in films[:15]:
+                lines.append(f"• { _html_escape(name) } — {src}")
+            if len(films) > 15:
+                lines.append(f"… and {len(films)-15} more")
             _send_batched_message(token, chat_id, lines)
             continue
 
