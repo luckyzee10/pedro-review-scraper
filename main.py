@@ -522,6 +522,8 @@ def handle_telegram_commands(
             "/normalizereviews",
             "/relinkreviews",
             "/commands",
+            "/setcanonical",
+            "/setrelease",
             "/backfill",
             "/normalize",
             "/refreshcatalog",
@@ -541,6 +543,8 @@ def handle_telegram_commands(
                 f"/normalizereviews@{bot_username.lower()}",
                 f"/relinkreviews@{bot_username.lower()}",
                 f"/commands@{bot_username.lower()}",
+                f"/setcanonical@{bot_username.lower()}",
+                f"/setrelease@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -935,9 +939,10 @@ def handle_telegram_commands(
 
         # Pin canonical TMDb mapping
         if used_cmd.startswith("/setcanonical"):
-            # Expect: /setcanonical "Title" 12345
+            # Accept: /setcanonical "Title" 12345 or /setcanonical Title 12345
             m = re.match(r"^\s*\/?setcanonical\s+\“([^\”]+)\”\s+(\d+)\s*$", text) or \
-                re.match(r"^\s*\/?setcanonical\s+\"([^\"]+)\"\s+(\d+)\s*$", text)
+                re.match(r"^\s*\/?setcanonical\s+\"([^\"]+)\"\s+(\d+)\s*$", text) or \
+                re.match(r"^\s*\/?setcanonical\s+(.+?)\s+(\d+)\s*$", text)
             if not m:
                 send_telegram_message(token, chat_id, "Usage: /setcanonical \"Title\" <tmdb_id>")
                 continue
@@ -977,7 +982,8 @@ def handle_telegram_commands(
         # Override release date
         if used_cmd.startswith("/setrelease"):
             m = re.match(r"^\s*\/?setrelease\s+\“([^\”]+)\”\s+(\d{4}-\d{2}-\d{2})\s*$", text) or \
-                re.match(r"^\s*\/?setrelease\s+\"([^\"]+)\"\s+(\d{4}-\d{2}-\d{2})\s*$", text)
+                re.match(r"^\s*\/?setrelease\s+\"([^\"]+)\"\s+(\d{4}-\d{2}-\d{2})\s*$", text) or \
+                re.match(r"^\s*\/?setrelease\s+(.+?)\s+(\d{4}-\d{2}-\d{2})\s*$", text)
             if not m:
                 send_telegram_message(token, chat_id, "Usage: /setrelease \"Title\" YYYY-MM-DD")
                 continue
