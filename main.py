@@ -34,12 +34,12 @@ from movie_meta import (
     match_movie_from_url,
     fetch_tmdb_by_id,
 )
+import markets as markets_mod
 from markets import (
     ensure_tables as ensure_market_tables,
     refresh_market_titles,
     load_market_index,
     load_market_canon,
-    upsert_market_meta,
 )
 
 
@@ -700,7 +700,7 @@ def handle_telegram_commands(
 
                             ct, rd, tid = fetch_tmdb_canonical(title, tmdb_api_key)
                             if ct or rd or tid:
-                                upsert_market_meta(conn, slug, ct, rd, tid)
+                                markets_mod.upsert_market_meta(conn, slug, ct, rd, tid)
                                 canon_title = ct or canon_title
                     except Exception:
                         pass
@@ -721,7 +721,7 @@ def handle_telegram_commands(
                                 ct, rd, tid = fetch_tmdb_canonical(canon_title, tmdb_api_key)
                                 if ct or rd or tid:
                                     canon_title = ct or canon_title
-                                    upsert_market_meta(conn, slug, ct, rd, tid)
+                                    markets_mod.upsert_market_meta(conn, slug, ct, rd, tid)
                         except Exception:
                             pass
                 # If no canon title, skip
@@ -742,7 +742,7 @@ def handle_telegram_commands(
                     # Move or update meta
                     ct, rd, tid = (load_market_canon(conn).get(slug) or (None, None, None))
                     if ct or rd or tid:
-                        upsert_market_meta(conn, new_slug, ct, rd, tid)
+                        markets_mod.upsert_market_meta(conn, new_slug, ct, rd, tid)
                     # If slug changed, delete old row to avoid duplicates
                     if new_slug != slug:
                         conn.execute("DELETE FROM market_titles WHERE slug = ?", (slug,))
@@ -964,7 +964,7 @@ def handle_telegram_commands(
                     (slug, canon_title, "manual", ts),
                 )
                 # Upsert meta
-                upsert_market_meta(conn, slug, canon_title, rd, tmdb_id)
+                markets_mod.upsert_market_meta(conn, slug, canon_title, rd, tmdb_id)
                 # Cache release date for summaries
                 if rd:
                     try:
@@ -999,7 +999,7 @@ def handle_telegram_commands(
                 )
                 # Keep existing canon title if present
                 ct, _, tid = (load_market_canon(conn).get(slug) or (None, None, None))
-                upsert_market_meta(conn, slug, ct or title_arg, rd, tid or 0)
+                markets_mod.upsert_market_meta(conn, slug, ct or title_arg, rd, tid or 0)
                 # Cache into movies
                 try:
                     from movie_meta import cache_release_date
