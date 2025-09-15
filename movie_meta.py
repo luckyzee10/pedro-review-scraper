@@ -9,7 +9,7 @@ Capabilities:
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, Dict, Tuple, Iterable
 
 import requests
@@ -126,12 +126,25 @@ def fetch_tmdb_canonical(title: str, api_key: str, timeout: int = 10) -> Tuple[O
         if not results:
             return None, None, None
         lowered = title.lower().strip()
-        best = None
+        # Prefer exact match
+        exact = None
         for r in results:
             if str(r.get("title", "")).lower().strip() == lowered:
-                best = r
+                exact = r
                 break
-        best = best or results[0]
+        # Prefer upcoming or recent releases (avoid very old titles with same name)
+        today = date.today()
+        recent_or_future = []
+        for r in results:
+            rd = r.get("release_date") or ""
+            try:
+                y, m, d = map(int, rd.split("-"))
+                rdate = date(y, m, d)
+                if rdate >= (today.replace(year=today.year - 1)):
+                    recent_or_future.append(r)
+            except Exception:
+                continue
+        best = exact or (recent_or_future[0] if recent_or_future else results[0])
         canon_title = best.get("title") or best.get("original_title")
         rd = best.get("release_date") or None
         tmdb_id = best.get("id")

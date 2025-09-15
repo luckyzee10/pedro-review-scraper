@@ -315,6 +315,36 @@ def _is_ticker_like(title: str) -> bool:
     return False
 
 
+def _roman_to_int(word: str) -> str:
+    mapping = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5"}
+    w = word.lower()
+    return mapping.get(w, word)
+
+
+def _alias_slugs_for_title(title: str) -> set[str]:
+    base = title or ""
+    candidates = set()
+    # canonical slug
+    candidates.add(_slugify_title(base))
+    # before colon
+    if ":" in base:
+        candidates.add(_slugify_title(base.split(":", 1)[0]))
+    # without leading article
+    low = base.lower().strip()
+    for art in ("the ", "a ", "an "):
+        if low.startswith(art):
+            candidates.add(_slugify_title(base[len(art):]))
+            break
+    # roman numerals to numbers
+    tokens = [ _roman_to_int(t) for t in re.split(r"\s+", base) ]
+    candidates.add(_slugify_title(" ".join(tokens)))
+    # numbers to roman (basic)
+    num_to_rom = {"2": "II", "3": "III", "4": "IV", "5": "V"}
+    tokens2 = [ num_to_rom.get(t, t) for t in tokens ]
+    candidates.add(_slugify_title(" ".join(tokens2)))
+    return {c for c in candidates if c}
+
+
 def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
@@ -1217,14 +1247,26 @@ def main() -> None:
             if row_exists(conn, outlet, headline):
                 continue
 
-            # Match movie via market titles (primary gate): find slug in URL
+            # Match movie via market titles + alias slugs (primary gate): find slug in URL
             link_or_title = it.link or headline
-            path = link_or_title.lower()
+            path = (link_or_title or "").lower()
             best_slug = None
             best_len = 0
-            for slug in market_index.keys():
-                if slug in path and len(slug) > best_len:
-                    best_slug, best_len = slug, len(slug)
+            # Build alias map on the fly
+            alias_map: dict[str, str] = {}
+            for slug, (mtitle, _src) in market_index.items():
+                alias_map[slug] = slug
+                alias_set = _alias_slugs_for_title(mtitle)
+                # Include canonical title alias if available
+                ct = (market_canon.get(slug) or (None, None, None))[0]
+                if ct:
+                    alias_set |= _alias_slugs_for_title(ct)
+                for als in alias_set:
+                    alias_map.setdefault(als, slug)
+            for als, root_slug in alias_map.items():
+                if als and als in path and len(als) > best_len:
+                    best_slug = root_slug
+                    best_len = len(als)
             if not best_slug:
                 continue
             # Resolve display title and release date from market canon when available
