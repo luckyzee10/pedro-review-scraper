@@ -1248,8 +1248,11 @@ def main() -> None:
                 continue
 
             # Match movie via market titles + alias slugs (primary gate): find slug in URL
-            link_or_title = it.link or headline
+            link_or_title = it.link or ""
             path = (link_or_title or "").lower()
+            # Match against both URL path and headline text for robustness
+            headline_l = (headline or "").lower()
+            haystack = f"{path} {headline_l}"
             best_slug = None
             best_len = 0
             # Build alias map on the fly
@@ -1264,7 +1267,7 @@ def main() -> None:
                 for als in alias_set:
                     alias_map.setdefault(als, slug)
             for als, root_slug in alias_map.items():
-                if als and als in path and len(als) > best_len:
+                if als and als in haystack and len(als) > best_len:
                     best_slug = root_slug
                     best_len = len(als)
             if not best_slug:

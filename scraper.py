@@ -24,6 +24,15 @@ FEEDS: List[str] = [
     "https://www.theguardian.com/film/rss",
     "https://www.rogerebert.com/feed",
     "https://www.rollingstone.com/movies/feed/",
+    # Expanded outlets (best-effort; failures are ignored gracefully)
+    "https://www.avclub.com/rss",
+    "https://theplaylist.net/feed/",
+    "https://www.slashfilm.com/feed/",
+    "https://www.vulture.com/rss/movies/index.xml",
+    "https://www.telegraph.co.uk/films/rss.xml",
+    "https://www.independent.co.uk/arts-entertainment/films/rss",
+    "https://feeds.ign.com/ign/movies",
+    "https://screenrant.com/feed/",
 ]
 
 
