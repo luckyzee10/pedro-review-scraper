@@ -86,6 +86,17 @@ def init_db(path: str = DB_PATH) -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ignored (
+            outlet TEXT NOT NULL,
+            headline TEXT NOT NULL,
+            reason TEXT,
+            timestamp TEXT,
+            PRIMARY KEY(outlet, headline)
+        )
+        """
+    )
     # Ensure movie metadata table exists
     try:
         ensure_movie_tables(conn)
@@ -232,6 +243,23 @@ def row_exists(conn: sqlite3.Connection, outlet: str, headline: str) -> bool:
         (outlet, headline),
     )
     return cur.fetchone() is not None
+
+
+def row_ignored(conn: sqlite3.Connection, outlet: str, headline: str) -> bool:
+    cur = conn.execute(
+        "SELECT 1 FROM ignored WHERE outlet = ? AND headline = ? LIMIT 1",
+        (outlet, headline),
+    )
+    return cur.fetchone() is not None
+
+
+def add_ignored(conn: sqlite3.Connection, outlet: str, headline: str, reason: str) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO ignored(outlet, headline, reason, timestamp) VALUES(?,?,?,?)",
+        (outlet, headline, reason, ts),
+    )
+    conn.commit()
 
 
 def insert_review(
@@ -385,7 +413,23 @@ def _phrase_in_headline(headline: str, phrase: str, require_quoted: bool = False
     return bool(pattern.search(text))
 
 
-def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
+def get_counts_for_movie(conn: sqlite3.Connection, movie: str) -> Dict[str, int]:
+    counts = {"Positive": 0, "Negative": 0, "Neutral": 0}
+    try:
+        rows = conn.execute(
+            "SELECT sentiment, COUNT(*) FROM reviews WHERE movie=? GROUP BY sentiment",
+            (movie,),
+        ).fetchall()
+        for s, c in rows:
+            if s in counts:
+                counts[s] = int(c or 0)
+    except Exception:
+        pass
+    return counts
+
+
+def format_message(conn: sqlite3.Connection, outlet: str, headline: str, sentiment: str, movie: str) -> str:
+    agg = get_counts_for_movie(conn, movie)
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
     neu = agg.get("Neutral", 0)
@@ -837,16 +881,19 @@ def handle_telegram_commands(
                 # prune false positive
                 try:
                     conn.execute("DELETE FROM reviews WHERE id=?", (rid,))
+                    add_ignored(conn, outlet, hl or "", reason="relink_prune")
                     removed += 1
                     if len(examples) < 5:
                         examples.append(f"• {outlet}: {hl[:80]}…")
                 except Exception:
                     pass
             conn.commit()
+            # No stale in-memory aggregates: we compute on-demand for notifications. Optionally, report fresh counts.
+            fresh = get_counts_for_movie(conn, target)
             send_telegram_message(
                 token,
                 chat_id,
-                (f"Relink complete for ‘{_html_escape(target)}’. Removed {removed}, kept {kept}." +
+                (f"Relink complete for ‘{_html_escape(target)}’. Removed {removed}, kept {kept}. Current: 👍 {fresh.get('Positive',0)} / 👎 {fresh.get('Negative',0)} / 😐 {fresh.get('Neutral',0)}" +
                  ("\nExamples removed:\n" + "\n".join(_html_escape(x) for x in examples) if examples else "")),
                 parse_mode="HTML",
             )
@@ -1349,7 +1396,7 @@ def main() -> None:
             outlet = it.outlet
             headline = it.title.strip()
             # Duplicate avoidance BEFORE spending on classification
-            if row_exists(conn, outlet, headline):
+            if row_exists(conn, outlet, headline) or row_ignored(conn, outlet, headline):
                 continue
 
             # Match movie via market titles + alias slugs (primary gate): find slug in URL or phrase in headline
@@ -1441,14 +1488,11 @@ def main() -> None:
             if sentiment not in ("Positive", "Negative", "Neutral"):
                 sentiment = "Neutral"
 
-            # Insert into DB and update in-memory counts
+            # Insert into DB
             insert_review(conn, outlet, movie, headline, sentiment)
 
-            c = counts.setdefault(movie, {"Positive": 0, "Negative": 0, "Neutral": 0})
-            c[sentiment] += 1
-
             # Send Telegram notification
-            msg = format_message(outlet, headline, sentiment, c, movie)
+            msg = format_message(conn, outlet, headline, sentiment, movie)
             ok = send_telegram_message(telegram_token, telegram_chat_id, msg)
             if not ok:
                 print("[!] Failed to send Telegram message for:", headline)
