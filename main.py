@@ -499,7 +499,7 @@ def handle_telegram_commands(
             items.sort(key=lambda kv: kv[0].lower())
             if not items:
                 # Attempt on-demand refresh when empty
-            try:
+                try:
                 n = refresh_market_titles(
                     conn,
                     os.getenv("KALSHI_API_KEY", "").strip(),
