@@ -548,6 +548,26 @@ def handle_telegram_commands(
                                 canon_title = ct or canon_title
                     except Exception:
                         pass
+                # If ticker-like, attempt to strip ticker prefix (e.g., kxrtHIM -> HIM)
+                if not canon_title and _is_ticker_like(title):
+                    low = title.lower()
+                    rest = None
+                    if low.startswith("kxrt") and len(title) > 4:
+                        rest = title[4:]
+                    elif low.startswith("kxr") and len(title) > 3:
+                        rest = title[3:]
+                    if rest and rest.strip():
+                        canon_title = _smart_titlecase(re.sub(r"[-_]+", " ", rest).strip())
+                        # Try TMDb on derived title
+                        try:
+                            if tmdb_api_key:
+                                from movie_meta import fetch_tmdb_canonical
+                                ct, rd, tid = fetch_tmdb_canonical(canon_title, tmdb_api_key)
+                                if ct or rd or tid:
+                                    canon_title = ct or canon_title
+                                    upsert_market_meta(conn, slug, ct, rd, tid)
+                        except Exception:
+                            pass
                 # If no canon title, skip
                 if not canon_title:
                     continue
@@ -584,6 +604,36 @@ def handle_telegram_commands(
             if examples:
                 msg += "\nExamples:\n" + "\n".join(_html_escape(x) for x in examples)
             send_telegram_message(token, chat_id, msg)
+            # Second pass: collapse variants like 'Title' vs 'Title: Subtitle' to the longer title
+            try:
+                variants = conn.execute("SELECT slug, title FROM market_titles").fetchall()
+                groups: dict[str, list[tuple[str, str]]] = {}
+                for s, t in variants:
+                    base = t.lower().split(":")[0].strip()
+                    base = re.sub(r"\s+", " ", base)
+                    groups.setdefault(base, []).append((s, t))
+                for base, items in groups.items():
+                    if len(items) <= 1:
+                        continue
+                    # Choose longest title as canonical for the group
+                    canonical = max(items, key=lambda it: len(it[1] or ""))[1]
+                    cslug = _slugify_title(canonical)
+                    ts = datetime.now(timezone.utc).isoformat()
+                    # Upsert canonical row
+                    conn.execute(
+                        "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(slug) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
+                        (cslug, canonical, "merged", ts),
+                    )
+                    # Migrate others to canonical slug
+                    for s, t in items:
+                        if s == cslug:
+                            continue
+                        conn.execute("DELETE FROM market_titles WHERE slug = ?", (s,))
+                        conn.execute("UPDATE market_meta SET slug=? WHERE slug=?", (cslug, s))
+                conn.commit()
+            except Exception:
+                pass
             continue
 
         # Normalize review rows' movie field to canonical titles from markets/TMDb
