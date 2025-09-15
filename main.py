@@ -520,6 +520,7 @@ def handle_telegram_commands(
             "/normalizemarkets",
             "/normalizereviews",
             "/relinkreviews",
+            "/commands",
             "/backfill",
             "/normalize",
             "/refreshcatalog",
@@ -538,6 +539,7 @@ def handle_telegram_commands(
                 f"/normalizemarkets@{bot_username.lower()}",
                 f"/normalizereviews@{bot_username.lower()}",
                 f"/relinkreviews@{bot_username.lower()}",
+                f"/commands@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -897,6 +899,33 @@ def handle_telegram_commands(
                  ("\nExamples removed:\n" + "\n".join(_html_escape(x) for x in examples) if examples else "")),
                 parse_mode="HTML",
             )
+            continue
+
+        # Commands help
+        if used_cmd.startswith("/commands"):
+            lines = [
+                "🧭 <b>Bot Commands</b>",
+                "/markets [filter] — Title (date) • sources • 👍/👎/😐",
+                "/status — Summary sorted by upcoming releases",
+                "/status &lt;movie&gt; — Single‑film totals",
+                "/addmarketurl &lt;urls...&gt; — Seed films from Polymarket/Kalshi URLs",
+                "/refreshmarkets — Refresh market titles now",
+                "/normalizemarkets — Strip tickers, merge Title vs Title: Subtitle",
+                "/normalizereviews — Rewrite reviews to canonical titles",
+                "/relinkreviews &lt;movie&gt; — Prune false positives (adds tombstones)",
+                "/backfill — Fill missing release dates via TMDb",
+                "/catalog [filter] — TMDb window (info)",
+                "/refreshcatalog — Refresh TMDb window (info)",
+                "/health — Basic status snapshot",
+                "/testapi — Check OpenAI/TMDb/Polymarket/Kalshi connectivity",
+                "",
+                "ℹ️ Matching: needs review cues + film match.",
+                "• Cues: ‘review’, ‘film review’, ‘critic review’, ‘verdict’, stars (★/‘3 stars’).",
+                "• Match via URL alias slugs and headline phrase (word‑boundaries).",
+                "• Ambiguous short titles (HIM/IT/US/UP/HER/ME/YOU): headline must quote the title.",
+                "• Tombstones stop deleted headlines from reappearing.",
+            ]
+            _send_batched_message(token, chat_id, lines)
             continue
 
         # Manually seed market titles via URLs (space/newline separated)
