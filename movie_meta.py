@@ -158,6 +158,30 @@ def fetch_tmdb_canonical(title: str, api_key: str, timeout: int = 10) -> Tuple[O
         return None, None, None
 
 
+def fetch_tmdb_by_id(tmdb_id: int, api_key: str, timeout: int = 10) -> Tuple[Optional[str], Optional[str]]:
+    """Fetch canonical title and release_date for a specific TMDb movie ID."""
+    try:
+        resp = requests.get(
+            f"https://api.themoviedb.org/3/movie/{tmdb_id}",
+            params={"api_key": api_key},
+            timeout=timeout,
+        )
+        if not resp.ok:
+            return None, None
+        d = resp.json() or {}
+        title = (d.get("title") or d.get("original_title") or "").strip() or None
+        rd = (d.get("release_date") or "").strip() or None
+        # Validate rd
+        if rd:
+            try:
+                datetime.strptime(rd, "%Y-%m-%d")
+            except Exception:
+                rd = None
+        return title, rd
+    except Exception:
+        return None, None
+
+
 def _slugify(value: str) -> str:
     import re
 

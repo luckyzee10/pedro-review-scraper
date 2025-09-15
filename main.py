@@ -32,6 +32,7 @@ from movie_meta import (
     refresh_catalog_window,
     load_catalog_index,
     match_movie_from_url,
+    fetch_tmdb_by_id,
 )
 from markets import (
     ensure_tables as ensure_market_tables,
@@ -924,8 +925,86 @@ def handle_telegram_commands(
                 "• Match via URL alias slugs and headline phrase (word‑boundaries).",
                 "• Ambiguous short titles (HIM/IT/US/UP/HER/ME/YOU): headline must quote the title.",
                 "• Tombstones stop deleted headlines from reappearing.",
+                "",
+                "Manual pins:",
+                "/setcanonical “<title>” <tmdb_id> — pin TMDb entry",
+                "/setrelease “<title>” <YYYY-MM-DD> — override date",
             ]
             _send_batched_message(token, chat_id, lines)
+            continue
+
+        # Pin canonical TMDb mapping
+        if used_cmd.startswith("/setcanonical"):
+            # Expect: /setcanonical "Title" 12345
+            m = re.match(r"^\s*\/?setcanonical\s+\“([^\”]+)\”\s+(\d+)\s*$", text) or \
+                re.match(r"^\s*\/?setcanonical\s+\"([^\"]+)\"\s+(\d+)\s*$", text)
+            if not m:
+                send_telegram_message(token, chat_id, "Usage: /setcanonical \"Title\" <tmdb_id>")
+                continue
+            title_arg, id_arg = m.group(1), m.group(2)
+            tmdb_id = int(id_arg)
+            if not tmdb_api_key:
+                send_telegram_message(token, chat_id, "TMDB_API_KEY not set")
+                continue
+            ct, rd = fetch_tmdb_by_id(tmdb_id, tmdb_api_key)
+            canon_title = ct or title_arg
+            # Resolve or create market slug
+            slug = _slugify_title(title_arg)
+            try:
+                # Ensure there is a market_titles row
+                ts = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(slug) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
+                    (slug, canon_title, "manual", ts),
+                )
+                # Upsert meta
+                upsert_market_meta(conn, slug, canon_title, rd, tmdb_id)
+                # Cache release date for summaries
+                if rd:
+                    try:
+                        from movie_meta import cache_release_date
+
+                        cache_release_date(conn, canon_title, rd)
+                    except Exception:
+                        pass
+                conn.commit()
+                send_telegram_message(token, chat_id, f"Pinned: {canon_title} (tmdb:{tmdb_id}) date={rd or 'n/a'}")
+            except Exception as e:
+                send_telegram_message(token, chat_id, f"Failed to pin: {e}")
+            continue
+
+        # Override release date
+        if used_cmd.startswith("/setrelease"):
+            m = re.match(r"^\s*\/?setrelease\s+\“([^\”]+)\”\s+(\d{4}-\d{2}-\d{2})\s*$", text) or \
+                re.match(r"^\s*\/?setrelease\s+\"([^\"]+)\"\s+(\d{4}-\d{2}-\d{2})\s*$", text)
+            if not m:
+                send_telegram_message(token, chat_id, "Usage: /setrelease \"Title\" YYYY-MM-DD")
+                continue
+            title_arg, rd = m.group(1), m.group(2)
+            slug = _slugify_title(title_arg)
+            try:
+                # Ensure market_titles exists
+                ts = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "INSERT INTO market_titles(slug, title, source, updated_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(slug) DO UPDATE SET updated_at=excluded.updated_at",
+                    (slug, title_arg, "manual", ts),
+                )
+                # Keep existing canon title if present
+                ct, _, tid = (load_market_canon(conn).get(slug) or (None, None, None))
+                upsert_market_meta(conn, slug, ct or title_arg, rd, tid or 0)
+                # Cache into movies
+                try:
+                    from movie_meta import cache_release_date
+
+                    cache_release_date(conn, ct or title_arg, rd)
+                except Exception:
+                    pass
+                conn.commit()
+                send_telegram_message(token, chat_id, f"Release set: {title_arg} → {rd}")
+            except Exception as e:
+                send_telegram_message(token, chat_id, f"Failed to set release: {e}")
             continue
 
         # Manually seed market titles via URLs (space/newline separated)
