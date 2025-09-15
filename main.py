@@ -441,62 +441,67 @@ def handle_telegram_commands(
 
         arg = text[len(used_cmd):].strip()
 
-        # List current market-matched titles (optional filter), dedup by TMDb id/title and roll up sources
+        # List current market-matched titles (optional filter), deduped and enriched
         if used_cmd.startswith("/markets"):
             markets = load_market_index(conn)
             mcanon = load_market_canon(conn)
-            # Group by TMDb id if present; else by base title before colon
-            groups: dict[tuple, dict] = {}
-            for slug, (title, src) in markets.items():
-                ct, rd, tid = mcanon.get(slug, (None, None, None))
-                raw = ct or title or ""
-                base = raw.split(":", 1)[0].strip().lower()
-                key = (tid or None, base)
-                g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid, "release": rd, "slugs": set()})
-                g["titles"].add(raw)
-                g["sources"].add(src)
-                g["slugs"].add(slug)
-                if not g.get("release") and rd:
-                    g["release"] = rd
-            if arg:
-                q = arg.strip().lower()
-                groups = {
-                    k: v for k, v in groups.items()
-                    if any(q in t.lower() for t in v["titles"])
-                }
-            # Build display tuples with counts and release date
-            items = []
-            for v in groups.values():
-                disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
-                # Try to ensure/fetch release date if missing
-                rd = v.get("release")
-                if not rd and tmdb_api_key:
+
+            def build_items() -> list[tuple[str, str, str, int, int, int]]:
+                groups: dict[tuple, dict] = {}
+                for slug, (title, src) in markets.items():
+                    ct, rd, tid = mcanon.get(slug, (None, None, None))
+                    raw = ct or title or ""
+                    base = raw.split(":", 1)[0].strip().lower()
+                    key = (tid or None, base)
+                    g = groups.setdefault(
+                        key, {"titles": set(), "sources": set(), "release": rd}
+                    )
+                    g["titles"].add(raw)
+                    g["sources"].add(src)
+                    if not g.get("release") and rd:
+                        g["release"] = rd
+                # Optional filter
+                if arg:
+                    q = arg.strip().lower()
+                    groups = {
+                        k: v for k, v in groups.items() if any(q in t.lower() for t in v["titles"])
+                    }
+                # Build display tuples with counts and release date
+                items_local: list[tuple[str, str, str, int, int, int]] = []
+                for v in groups.values():
+                    disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
+                    # Ensure/fetch release date if missing
+                    rd = v.get("release")
+                    if not rd and tmdb_api_key:
+                        try:
+                            rd = ensure_release_date(conn, disp, tmdb_api_key)
+                        except Exception:
+                            rd = None
+                    # Aggregate review counts across variant titles in group
+                    title_list = list(v["titles"]) if v["titles"] else [disp]
+                    pos = neg = neu = 0
                     try:
-                        rd = ensure_release_date(conn, disp, tmdb_api_key)
+                        placeholders = ",".join(["?"] * len(title_list))
+                        qrows = conn.execute(
+                            f"SELECT movie, sentiment, COUNT(*) FROM reviews WHERE movie IN ({placeholders}) GROUP BY movie, sentiment",
+                            title_list,
+                        ).fetchall()
+                        for _mv, snt, cnt in qrows:
+                            c = int(cnt or 0)
+                            if snt == "Positive":
+                                pos += c
+                            elif snt == "Negative":
+                                neg += c
+                            elif snt == "Neutral":
+                                neu += c
                     except Exception:
-                        rd = None
-                # Aggregate review counts across variant titles in group
-                title_list = list(v["titles"]) if v["titles"] else [disp]
-                pos = neg = neu = 0
-                try:
-                    placeholders = ",".join(["?"] * len(title_list))
-                    qrows = conn.execute(
-                        f"SELECT movie, sentiment, COUNT(*) FROM reviews WHERE movie IN ({placeholders}) GROUP BY movie, sentiment",
-                        title_list,
-                    ).fetchall()
-                    for _mv, snt, cnt in qrows:
-                        c = int(cnt or 0)
-                        if snt == "Positive":
-                            pos += c
-                        elif snt == "Negative":
-                            neg += c
-                        elif snt == "Neutral":
-                            neu += c
-                except Exception:
-                    pass
-                sources_str = ", ".join(sorted(v["sources"]))
-                items.append((disp, sources_str, rd or "n/a", pos, neg, neu))
-            items.sort(key=lambda kv: kv[0].lower())
+                        pass
+                    sources_str = ", ".join(sorted(v["sources"]))
+                    items_local.append((disp, sources_str, (rd or "n/a"), pos, neg, neu))
+                items_local.sort(key=lambda kv: kv[0].lower())
+                return items_local
+
+            items = build_items()
             if not items:
                 # Attempt on-demand refresh when empty
                 try:
@@ -509,46 +514,9 @@ def handle_telegram_commands(
                     )
                     markets = load_market_index(conn)
                     mcanon = load_market_canon(conn)
-                    groups = {}
-                    for slug, (title, src) in markets.items():
-                        ct, rd, tid = mcanon.get(slug, (None, None, None))
-                        raw = ct or title or ""
-                        base = raw.split(":", 1)[0].strip().lower()
-                        key = (tid or None, base)
-                        g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid, "release": rd, "slugs": set()})
-                        g["titles"].add(raw)
-                        g["sources"].add(src)
-                        g["slugs"].add(slug)
-                        if not g.get("release") and rd:
-                            g["release"] = rd
+                    items = build_items()
+                except Exception:
                     items = []
-                    for v in groups.values():
-                        disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
-                        rd = v.get("release") or "n/a"
-                        # Aggregate counts across variant titles
-                        title_list = list(v["titles"]) if v["titles"] else [disp]
-                        pos = neg = neu = 0
-                        try:
-                            placeholders = ",".join(["?"] * len(title_list))
-                            qrows = conn.execute(
-                                f"SELECT movie, sentiment, COUNT(*) FROM reviews WHERE movie IN ({placeholders}) GROUP BY movie, sentiment",
-                                title_list,
-                            ).fetchall()
-                            for _mv, snt, cnt in qrows:
-                                c = int(cnt or 0)
-                                if snt == "Positive":
-                                    pos += c
-                                elif snt == "Negative":
-                                    neg += c
-                                elif snt == "Neutral":
-                                    neu += c
-                        except Exception:
-                            pass
-                        sources_str = ", ".join(sorted(v["sources"]))
-                        items.append((disp, sources_str, rd, pos, neg, neu))
-                    items.sort(key=lambda kv: kv[0].lower())
-            except Exception:
-                items = []
             if not items:
                 # Provide debug counts by source to help diagnose
                 try:
@@ -568,7 +536,6 @@ def handle_telegram_commands(
             for t, s, rd, pos, neg, neu in items[:200]:
                 t_h = _html_escape(t)
                 rd_h = _html_escape(rd or "n/a")
-                # Emoji counts: 👍 👎 😐
                 lines.append(f"• <b>{t_h}</b> ({rd_h}) — {s} — 👍 {pos} / 👎 {neg} / 😐 {neu}")
             _send_batched_message(token, chat_id, lines)
             continue
