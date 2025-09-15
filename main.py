@@ -345,6 +345,46 @@ def _alias_slugs_for_title(title: str) -> set[str]:
     return {c for c in candidates if c}
 
 
+AMBIGUOUS_SHORT_TITLES = {"it", "us", "up", "her", "him", "you", "me"}
+
+
+def _is_ambiguous_movie_title(title: str) -> bool:
+    slug = _slugify_title(title)
+    # Single token and <= 3 chars or in ambiguous set
+    tokens = slug.split("-")
+    if len(tokens) == 1 and (len(slug) <= 3 or slug in AMBIGUOUS_SHORT_TITLES):
+        return True
+    return False
+
+
+def _phrase_in_headline(headline: str, phrase: str, require_quoted: bool = False) -> bool:
+    text = headline or ""
+    # Normalize spaces
+    phrase_norm = re.sub(r"\s+", " ", phrase).strip()
+    if not phrase_norm:
+        return False
+    # If require quoted, check inside any quote pair
+    if require_quoted:
+        # Simple quote scanning for ASCII and smart quotes
+        quote_patterns = [
+            ("\"", "\""),
+            ("'", "'"),
+            ("“", "”"),
+            ("‘", "’"),
+        ]
+        for lq, rq in quote_patterns:
+            pattern = re.compile(
+                re.escape(lq) + r"\s*" + re.escape(phrase_norm) + r"\s*" + re.escape(rq),
+                re.IGNORECASE,
+            )
+            if pattern.search(text):
+                return True
+        return False
+    # Otherwise check as whole phrase with word boundaries
+    pattern = re.compile(r"\b" + re.escape(phrase_norm) + r"\b", re.IGNORECASE)
+    return bool(pattern.search(text))
+
+
 def format_message(outlet: str, headline: str, sentiment: str, agg: Dict[str, int], movie: str) -> str:
     pos = agg.get("Positive", 0)
     neg = agg.get("Negative", 0)
@@ -1247,7 +1287,7 @@ def main() -> None:
             if row_exists(conn, outlet, headline):
                 continue
 
-            # Match movie via market titles + alias slugs (primary gate): find slug in URL
+            # Match movie via market titles + alias slugs (primary gate): find slug in URL or phrase in headline
             link_or_title = it.link or ""
             path = (link_or_title or "").lower()
             # Match against both URL path and headline text for robustness
@@ -1270,6 +1310,29 @@ def main() -> None:
                 if als and als in haystack and len(als) > best_len:
                     best_slug = root_slug
                     best_len = len(als)
+            if not best_slug:
+                # Try phrase matching on headline for non-ambiguous titles
+                for slug, (mtitle, _src) in market_index.items():
+                    ct = (market_canon.get(slug) or (None, None, None))[0]
+                    phrases = set()
+                    if mtitle:
+                        phrases.add(mtitle)
+                        if ":" in mtitle:
+                            phrases.add(mtitle.split(":", 1)[0])
+                    if ct:
+                        phrases.add(ct)
+                        if ":" in ct:
+                            phrases.add(ct.split(":", 1)[0])
+                    ambiguous = _is_ambiguous_movie_title(ct or mtitle or "")
+                    for ph in phrases:
+                        if not ph:
+                            continue
+                        if _phrase_in_headline(headline or "", ph, require_quoted=ambiguous):
+                            best_slug = slug
+                            best_len = len(ph)
+                            break
+                    if best_slug:
+                        break
             if not best_slug:
                 continue
             # Resolve display title and release date from market canon when available
