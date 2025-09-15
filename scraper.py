@@ -33,6 +33,12 @@ FEEDS: List[str] = [
     "https://www.independent.co.uk/arts-entertainment/films/rss",
     "https://feeds.ign.com/ign/movies",
     "https://screenrant.com/feed/",
+    "https://www.empireonline.com/rss/all.xml",
+    "https://www.totalfilm.com/rss",
+    "https://www.timeout.com/rss",
+    "https://ew.com/feed/",
+    "https://www.thewrap.com/feed/",
+    "https://www.screendaily.com/XmlServers/navsectionRSS.aspx?navsectioncode=3",
 ]
 
 

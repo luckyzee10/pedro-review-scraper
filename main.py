@@ -475,6 +475,7 @@ def handle_telegram_commands(
             "/refreshmarkets",
             "/normalizemarkets",
             "/normalizereviews",
+            "/relinkreviews",
             "/backfill",
             "/normalize",
             "/refreshcatalog",
@@ -492,6 +493,7 @@ def handle_telegram_commands(
                 f"/addmarketurl@{bot_username.lower()}",
                 f"/normalizemarkets@{bot_username.lower()}",
                 f"/normalizereviews@{bot_username.lower()}",
+                f"/relinkreviews@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -785,6 +787,69 @@ def handle_telegram_commands(
             if examples:
                 msg += "\nExamples:\n" + "\n".join(_html_escape(x) for x in examples)
             send_telegram_message(token, chat_id, msg)
+            continue
+
+        # Relink (prune) reviews for a specific movie using current matching rules (headline gating)
+        if used_cmd.startswith("/relinkreviews"):
+            target = arg.strip()
+            if not target:
+                send_telegram_message(token, chat_id, "Usage: /relinkreviews <movie title>")
+                continue
+            # Build phrase set from market/canonical if available
+            slug_target = _slugify_title(target)
+            phrases = set()
+            ct_default = None
+            # Find matching market entry
+            for s, (t, _src) in load_market_index(conn).items():
+                if s == slug_target or _slugify_title(t) == slug_target:
+                    phrases.add(t)
+                    ct_default = (load_market_canon(conn).get(s) or (None, None, None))[0]
+                    if ct_default:
+                        phrases.add(ct_default)
+                    break
+            # Fallback to provided target
+            if not phrases:
+                phrases.add(target)
+            # Add base-before-colon variants
+            for ph in list(phrases):
+                if ":" in ph:
+                    phrases.add(ph.split(":", 1)[0])
+            ambiguous = _is_ambiguous_movie_title(next(iter(phrases)))
+            # Fetch candidate rows
+            rows = conn.execute(
+                "SELECT id, outlet, headline FROM reviews WHERE LOWER(movie)=LOWER(?)",
+                (target,),
+            ).fetchall()
+            removed = 0
+            kept = 0
+            examples = []
+            for rid, outlet, hl in rows:
+                ok = False
+                for ph in phrases:
+                    if not ph:
+                        continue
+                    if _phrase_in_headline(hl or "", ph, require_quoted=ambiguous):
+                        ok = True
+                        break
+                if ok:
+                    kept += 1
+                    continue
+                # prune false positive
+                try:
+                    conn.execute("DELETE FROM reviews WHERE id=?", (rid,))
+                    removed += 1
+                    if len(examples) < 5:
+                        examples.append(f"• {outlet}: {hl[:80]}…")
+                except Exception:
+                    pass
+            conn.commit()
+            send_telegram_message(
+                token,
+                chat_id,
+                (f"Relink complete for ‘{_html_escape(target)}’. Removed {removed}, kept {kept}." +
+                 ("\nExamples removed:\n" + "\n".join(_html_escape(x) for x in examples) if examples else "")),
+                parse_mode="HTML",
+            )
             continue
 
         # Manually seed market titles via URLs (space/newline separated)
@@ -1307,7 +1372,19 @@ def main() -> None:
                 for als in alias_set:
                     alias_map.setdefault(als, slug)
             for als, root_slug in alias_map.items():
-                if als and als in haystack and len(als) > best_len:
+                if not als:
+                    continue
+                matched = False
+                # Ambiguous short titles: only accept from URL path, not headline
+                if als in AMBIGUOUS_SHORT_TITLES:
+                    matched = als in path
+                else:
+                    # Require word-boundary match in either URL path or headline
+                    if re.search(r"\b" + re.escape(als) + r"\b", path):
+                        matched = True
+                    elif re.search(r"\b" + re.escape(als) + r"\b", headline_l):
+                        matched = True
+                if matched and len(als) > best_len:
                     best_slug = root_slug
                     best_len = len(als)
             if not best_slug:
