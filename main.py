@@ -452,21 +452,50 @@ def handle_telegram_commands(
                 raw = ct or title or ""
                 base = raw.split(":", 1)[0].strip().lower()
                 key = (tid or None, base)
-                g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid})
+                g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid, "release": rd, "slugs": set()})
                 g["titles"].add(raw)
                 g["sources"].add(src)
+                g["slugs"].add(slug)
+                if not g.get("release") and rd:
+                    g["release"] = rd
             if arg:
                 q = arg.strip().lower()
                 groups = {
                     k: v for k, v in groups.items()
                     if any(q in t.lower() for t in v["titles"])
                 }
-            # Choose the longest title in each group for display
+            # Build display tuples with counts and release date
             items = []
             for v in groups.values():
                 disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
+                # Try to ensure/fetch release date if missing
+                rd = v.get("release")
+                if not rd and tmdb_api_key:
+                    try:
+                        rd = ensure_release_date(conn, disp, tmdb_api_key)
+                    except Exception:
+                        rd = None
+                # Aggregate review counts across variant titles in group
+                title_list = list(v["titles"]) if v["titles"] else [disp]
+                pos = neg = neu = 0
+                try:
+                    placeholders = ",".join(["?"] * len(title_list))
+                    qrows = conn.execute(
+                        f"SELECT movie, sentiment, COUNT(*) FROM reviews WHERE movie IN ({placeholders}) GROUP BY movie, sentiment",
+                        title_list,
+                    ).fetchall()
+                    for _mv, snt, cnt in qrows:
+                        c = int(cnt or 0)
+                        if snt == "Positive":
+                            pos += c
+                        elif snt == "Negative":
+                            neg += c
+                        elif snt == "Neutral":
+                            neu += c
+                except Exception:
+                    pass
                 sources_str = ", ".join(sorted(v["sources"]))
-                items.append((disp, sources_str))
+                items.append((disp, sources_str, rd or "n/a", pos, neg, neu))
             items.sort(key=lambda kv: kv[0].lower())
             if not items:
                 # Attempt on-demand refresh when empty
@@ -486,14 +515,37 @@ def handle_telegram_commands(
                     raw = ct or title or ""
                     base = raw.split(":", 1)[0].strip().lower()
                     key = (tid or None, base)
-                    g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid})
+                    g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid, "release": rd, "slugs": set()})
                     g["titles"].add(raw)
                     g["sources"].add(src)
+                    g["slugs"].add(slug)
+                    if not g.get("release") and rd:
+                        g["release"] = rd
                 items = []
                 for v in groups.values():
                     disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
+                    rd = v.get("release") or "n/a"
+                    # Aggregate counts across variant titles
+                    title_list = list(v["titles"]) if v["titles"] else [disp]
+                    pos = neg = neu = 0
+                    try:
+                        placeholders = ",".join(["?"] * len(title_list))
+                        qrows = conn.execute(
+                            f"SELECT movie, sentiment, COUNT(*) FROM reviews WHERE movie IN ({placeholders}) GROUP BY movie, sentiment",
+                            title_list,
+                        ).fetchall()
+                        for _mv, snt, cnt in qrows:
+                            c = int(cnt or 0)
+                            if snt == "Positive":
+                                pos += c
+                            elif snt == "Negative":
+                                neg += c
+                            elif snt == "Neutral":
+                                neu += c
+                    except Exception:
+                        pass
                     sources_str = ", ".join(sorted(v["sources"]))
-                    items.append((disp, sources_str))
+                    items.append((disp, sources_str, rd, pos, neg, neu))
                 items.sort(key=lambda kv: kv[0].lower())
             except Exception:
                 items = []
@@ -513,9 +565,11 @@ def handle_telegram_commands(
                 )
                 continue
             lines = ["📈 <b>Market Titles</b>"]
-            for t, s in items[:200]:
+            for t, s, rd, pos, neg, neu in items[:200]:
                 t_h = _html_escape(t)
-                lines.append(f"• <b>{t_h}</b> — {s}")
+                rd_h = _html_escape(rd or "n/a")
+                # Emoji counts: 👍 👎 😐
+                lines.append(f"• <b>{t_h}</b> ({rd_h}) — {s} — 👍 {pos} / 👎 {neg} / 😐 {neu}")
             _send_batched_message(token, chat_id, lines)
             continue
 
