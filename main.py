@@ -500,53 +500,53 @@ def handle_telegram_commands(
             if not items:
                 # Attempt on-demand refresh when empty
                 try:
-                n = refresh_market_titles(
-                    conn,
-                    os.getenv("KALSHI_API_KEY", "").strip(),
-                    os.getenv("KALSHI_API_SECRET", "").strip(),
-                    os.getenv("TMDB_API_KEY", "").strip(),
-                    os.getenv("OPENAI_API_KEY", "").strip(),
-                )
-                markets = load_market_index(conn)
-                mcanon = load_market_canon(conn)
-                groups = {}
-                for slug, (title, src) in markets.items():
-                    ct, rd, tid = mcanon.get(slug, (None, None, None))
-                    raw = ct or title or ""
-                    base = raw.split(":", 1)[0].strip().lower()
-                    key = (tid or None, base)
-                    g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid, "release": rd, "slugs": set()})
-                    g["titles"].add(raw)
-                    g["sources"].add(src)
-                    g["slugs"].add(slug)
-                    if not g.get("release") and rd:
-                        g["release"] = rd
-                items = []
-                for v in groups.values():
-                    disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
-                    rd = v.get("release") or "n/a"
-                    # Aggregate counts across variant titles
-                    title_list = list(v["titles"]) if v["titles"] else [disp]
-                    pos = neg = neu = 0
-                    try:
-                        placeholders = ",".join(["?"] * len(title_list))
-                        qrows = conn.execute(
-                            f"SELECT movie, sentiment, COUNT(*) FROM reviews WHERE movie IN ({placeholders}) GROUP BY movie, sentiment",
-                            title_list,
-                        ).fetchall()
-                        for _mv, snt, cnt in qrows:
-                            c = int(cnt or 0)
-                            if snt == "Positive":
-                                pos += c
-                            elif snt == "Negative":
-                                neg += c
-                            elif snt == "Neutral":
-                                neu += c
-                    except Exception:
-                        pass
-                    sources_str = ", ".join(sorted(v["sources"]))
-                    items.append((disp, sources_str, rd, pos, neg, neu))
-                items.sort(key=lambda kv: kv[0].lower())
+                    n = refresh_market_titles(
+                        conn,
+                        os.getenv("KALSHI_API_KEY", "").strip(),
+                        os.getenv("KALSHI_API_SECRET", "").strip(),
+                        os.getenv("TMDB_API_KEY", "").strip(),
+                        os.getenv("OPENAI_API_KEY", "").strip(),
+                    )
+                    markets = load_market_index(conn)
+                    mcanon = load_market_canon(conn)
+                    groups = {}
+                    for slug, (title, src) in markets.items():
+                        ct, rd, tid = mcanon.get(slug, (None, None, None))
+                        raw = ct or title or ""
+                        base = raw.split(":", 1)[0].strip().lower()
+                        key = (tid or None, base)
+                        g = groups.setdefault(key, {"titles": set(), "sources": set(), "tid": tid, "release": rd, "slugs": set()})
+                        g["titles"].add(raw)
+                        g["sources"].add(src)
+                        g["slugs"].add(slug)
+                        if not g.get("release") and rd:
+                            g["release"] = rd
+                    items = []
+                    for v in groups.values():
+                        disp = max(v["titles"], key=lambda t: len(t)) if v["titles"] else ""
+                        rd = v.get("release") or "n/a"
+                        # Aggregate counts across variant titles
+                        title_list = list(v["titles"]) if v["titles"] else [disp]
+                        pos = neg = neu = 0
+                        try:
+                            placeholders = ",".join(["?"] * len(title_list))
+                            qrows = conn.execute(
+                                f"SELECT movie, sentiment, COUNT(*) FROM reviews WHERE movie IN ({placeholders}) GROUP BY movie, sentiment",
+                                title_list,
+                            ).fetchall()
+                            for _mv, snt, cnt in qrows:
+                                c = int(cnt or 0)
+                                if snt == "Positive":
+                                    pos += c
+                                elif snt == "Negative":
+                                    neg += c
+                                elif snt == "Neutral":
+                                    neu += c
+                        except Exception:
+                            pass
+                        sources_str = ", ".join(sorted(v["sources"]))
+                        items.append((disp, sources_str, rd, pos, neg, neu))
+                    items.sort(key=lambda kv: kv[0].lower())
             except Exception:
                 items = []
             if not items:
