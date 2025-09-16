@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 import requests
 import email.utils as eut
 
-from scraper import FEEDS, fetch_all, ScrapedItem
+from scraper import FEEDS, fetch_all, ScrapedItem, _is_review_candidate
 from sentiment import classify_sentiment, extract_market_title
 from telegram import send_telegram_message, fetch_updates, get_me, delete_webhook
 from movie_meta import (
@@ -526,6 +526,8 @@ def handle_telegram_commands(
             "/commands",
             "/setcanonical",
             "/setrelease",
+            "/backfillfilm",
+            "/diagnose",
             "/backfill",
             "/normalize",
             "/refreshcatalog",
@@ -548,6 +550,8 @@ def handle_telegram_commands(
                 f"/commands@{bot_username.lower()}",
                 f"/setcanonical@{bot_username.lower()}",
                 f"/setrelease@{bot_username.lower()}",
+                f"/backfillfilm@{bot_username.lower()}",
+                f"/diagnose@{bot_username.lower()}",
                 f"/backfill@{bot_username.lower()}",
                 f"/normalize@{bot_username.lower()}",
                 f"/refreshcatalog@{bot_username.lower()}",
@@ -922,6 +926,8 @@ def handle_telegram_commands(
                 "/normalizereviews — Rewrite reviews to canonical titles",
                 "/relinkreviews &lt;movie&gt; — Prune false positives (adds tombstones)",
                 "/scanrules — Show what gets accepted",
+                "/backfillfilm &lt;title&gt; [days] — One-time 7d sweep",
+                "/diagnose &lt;title&gt; — Show recent skips + why",
                 "/backfill — Fill missing release dates via TMDb",
                 "/catalog [filter] — TMDb window (info)",
                 "/refreshcatalog — Refresh TMDb window (info)",
@@ -1085,6 +1091,114 @@ def handle_telegram_commands(
                 insert_review(conn, outlet, movie, headline, sentiment)
                 added += 1
             send_telegram_message(token, chat_id, f"Backfill complete for ‘{film}’: added {added}, scanned {checked} items.")
+            continue
+
+        # Diagnose matching for a film: report recent skips and reasons
+        if used_cmd.startswith("/diagnose"):
+            m = re.match(r"^\s*\/?diagnose\s+\“([^\”]+)\”(?:\s+(\d+))?\s*$", text) or \
+                re.match(r"^\s*\/?diagnose\s+\"([^\"]+)\"(?:\s+(\d+))?\s*$", text) or \
+                re.match(r"^\s*\/?diagnose\s+(.+?)(?:\s+(\d+))?\s*$", text)
+            if not m:
+                send_telegram_message(token, chat_id, "Usage: /diagnose \"Title\" [limit]")
+                continue
+            film = m.group(1).strip()
+            limit = int(m.group(2)) if m.group(2) else 10
+            # Build alias map to root slug
+            market_index = load_market_index(conn)
+            market_canon = load_market_canon(conn)
+            alias_to_root: dict[str, str] = {}
+            for slug, (mtitle, _src) in market_index.items():
+                alias_to_root[_slugify_title(mtitle)] = slug
+                alias = _alias_slugs_for_title(mtitle)
+                ct = (market_canon.get(slug) or (None, None, None))[0]
+                if ct:
+                    alias |= _alias_slugs_for_title(ct)
+                for a in alias:
+                    alias_to_root.setdefault(a, slug)
+            target_slug = alias_to_root.get(_slugify_title(film))
+            if not target_slug:
+                send_telegram_message(token, chat_id, f"Film not tracked: {film}")
+                continue
+            try:
+                items = fetch_all(FEEDS)
+            except Exception as e:
+                send_telegram_message(token, chat_id, f"Diagnose fetch error: {e}")
+                continue
+            reasons = []
+            count_map = {"tombstone":0, "duplicate":0, "no_cue":0, "no_match":0}
+            for it in items:
+                outlet = it.outlet
+                headline = (it.title or "").strip()
+                link = it.link or ""
+                # Quick prefilter: mention film alias in URL/headline text to limit noise
+                hay = f"{(link or '').lower()} {(headline or '').lower()}"
+                prehit = False
+                for als, root in alias_to_root.items():
+                    if root != target_slug:
+                        continue
+                    if re.search(r"\b" + re.escape(als) + r"\b", hay):
+                        prehit = True
+                        break
+                if not prehit:
+                    continue
+                # Check blocks
+                if row_ignored(conn, outlet, headline):
+                    count_map["tombstone"] += 1
+                    if len(reasons) < limit:
+                        reasons.append(("tombstone", outlet, headline))
+                    continue
+                if row_exists(conn, outlet, headline):
+                    count_map["duplicate"] += 1
+                    if len(reasons) < limit:
+                        reasons.append(("duplicate", outlet, headline))
+                    continue
+                if not _is_review_candidate(headline, it.summary, link):
+                    count_map["no_cue"] += 1
+                    if len(reasons) < limit:
+                        reasons.append(("no_cue", outlet, headline))
+                    continue
+                # Match gating
+                path = (link or "").lower()
+                headline_l = (headline or "").lower()
+                matched_root = None
+                # Slug aliases
+                for als, root in alias_to_root.items():
+                    if root != target_slug:
+                        continue
+                    if _is_ambiguous_movie_title(als):
+                        if re.search(r"\b" + re.escape(als) + r"\b", path):
+                            matched_root = root
+                            break
+                    else:
+                        if re.search(r"\b" + re.escape(als) + r"\b", path) or re.search(r"\b" + re.escape(als) + r"\b", headline_l):
+                            matched_root = root
+                            break
+                # Phrase fallback
+                if not matched_root:
+                    ct = (market_canon.get(target_slug) or (None, None, None))[0]
+                    phrases = set([film])
+                    if ct:
+                        phrases.add(ct)
+                    for ph in list(phrases):
+                        if ":" in ph:
+                            phrases.add(ph.split(":", 1)[0])
+                    ambiguous = _is_ambiguous_movie_title(next(iter(phrases)))
+                    for ph in phrases:
+                        if _phrase_in_headline(headline, ph, require_quoted=ambiguous):
+                            matched_root = target_slug
+                            break
+                if not matched_root:
+                    count_map["no_match"] += 1
+                    if len(reasons) < limit:
+                        reasons.append(("no_match", outlet, headline))
+                    continue
+            # Build report
+            lines = [f"🛠️ Diagnose ‘{_html_escape(film)}’", f"tombstone: {count_map['tombstone']}", f"duplicate: {count_map['duplicate']}", f"no_cue: {count_map['no_cue']}", f"no_match: {count_map['no_match']}"]
+            if reasons:
+                lines.append("Examples:")
+                for r, o, h in reasons:
+                    lines.append(f"• {r} — { _html_escape(o) }: { _html_escape(h[:120]) }…")
+            _send_batched_message(token, chat_id, lines)
             continue
 
         # Pin canonical TMDb mapping
