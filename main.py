@@ -941,8 +941,8 @@ def handle_telegram_commands(
                 "• Tombstones stop deleted headlines from reappearing.",
                 "",
                 "Manual pins:",
-                "/setcanonical “<title>” <tmdb_id> — pin TMDb entry",
-                "/setrelease “<title>” <YYYY-MM-DD> — override date",
+                "/setcanonical \"&lt;title&gt;\" &lt;tmdb_id&gt; — pin TMDb entry",
+                "/setrelease \"&lt;title&gt;\" &lt;YYYY-MM-DD&gt; — override date",
             ]
             _send_batched_message(token, chat_id, lines)
             continue
