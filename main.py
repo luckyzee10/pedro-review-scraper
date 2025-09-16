@@ -22,6 +22,7 @@ from typing import Dict, Tuple
 
 from dotenv import load_dotenv
 import requests
+import email.utils as eut
 
 from scraper import FEEDS, fetch_all, ScrapedItem
 from sentiment import classify_sentiment, extract_market_title
@@ -979,6 +980,111 @@ def handle_telegram_commands(
             if len(films) > 15:
                 lines.append(f"… and {len(films)-15} more")
             _send_batched_message(token, chat_id, lines)
+            continue
+
+        # Backfill last N days for a specific film by scanning current feeds
+        if used_cmd.startswith("/backfillfilm"):
+            m = re.match(r"^\s*\/?backfillfilm\s+\“([^\”]+)\”(?:\s+(\d+))?\s*$", text) or \
+                re.match(r"^\s*\/?backfillfilm\s+\"([^\"]+)\"(?:\s+(\d+))?\s*$", text) or \
+                re.match(r"^\s*\/?backfillfilm\s+(.+?)(?:\s+(\d+))?\s*$", text)
+            if not m:
+                send_telegram_message(token, chat_id, "Usage: /backfillfilm \"Title\" [days]")
+                continue
+            film = m.group(1).strip()
+            days = int(m.group(2)) if m.group(2) else 7
+            # Build alias/root mapping for all tracked films
+            market_index = load_market_index(conn)
+            market_canon = load_market_canon(conn)
+            alias_to_root: dict[str, str] = {}
+            for slug, (mtitle, _src) in market_index.items():
+                alias_to_root[_slugify_title(mtitle)] = slug
+                alias = _alias_slugs_for_title(mtitle)
+                ct = (market_canon.get(slug) or (None, None, None))[0]
+                if ct:
+                    alias |= _alias_slugs_for_title(ct)
+                for a in alias:
+                    alias_to_root.setdefault(a, slug)
+            # Determine target root slug(s)
+            target_slug = alias_to_root.get(_slugify_title(film))
+            if not target_slug:
+                send_telegram_message(token, chat_id, f"Film not tracked: {film}")
+                continue
+            # Scan feeds once
+            try:
+                items = fetch_all(FEEDS)
+            except Exception as e:
+                send_telegram_message(token, chat_id, f"Backfill error fetching feeds: {e}")
+                continue
+            # Filter by date window
+            from datetime import datetime, timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            added = 0
+            checked = 0
+            for it in items:
+                # Date filter
+                dt = None
+                try:
+                    dt = eut.parsedate_to_datetime(it.published) if it.published else None
+                    if dt and dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    dt = None
+                if dt and dt < cutoff:
+                    continue
+                outlet = it.outlet
+                headline = (it.title or "").strip()
+                link = it.link or ""
+                if row_exists(conn, outlet, headline) or row_ignored(conn, outlet, headline):
+                    continue
+                # Must pass review cues
+                if not _is_review_candidate(headline, it.summary, link):
+                    continue
+                checked += 1
+                # Match gating using aliases + headline phrase rules
+                path = (link or "").lower()
+                headline_l = headline.lower()
+                haystack = f"{path} {headline_l}"
+                matched_root = None
+                # Try alias slug match
+                for als, root in alias_to_root.items():
+                    if root != target_slug:
+                        continue
+                    if _is_ambiguous_movie_title(als):
+                        if re.search(r"\b" + re.escape(als) + r"\b", path):
+                            matched_root = root
+                            break
+                    else:
+                        if re.search(r"\b" + re.escape(als) + r"\b", haystack):
+                            matched_root = root
+                            break
+                # Try phrase in headline if not matched
+                if not matched_root:
+                    ct = (market_canon.get(target_slug) or (None, None, None))[0]
+                    phrases = set([film])
+                    if ct:
+                        phrases.add(ct)
+                    for ph in list(phrases):
+                        if ":" in ph:
+                            phrases.add(ph.split(":", 1)[0])
+                    ambiguous = _is_ambiguous_movie_title(next(iter(phrases)))
+                    for ph in phrases:
+                        if _phrase_in_headline(headline, ph, require_quoted=ambiguous):
+                            matched_root = target_slug
+                            break
+                if not matched_root:
+                    continue
+                # Insert
+                # Resolve movie name
+                canon = market_canon.get(matched_root)
+                movie = (canon and canon[0]) or (market_index.get(matched_root) or (film,))[0]
+                # Classify
+                text_for_model = f"{headline}\n\n{it.summary}".strip()
+                sentiment = classify_sentiment(text_for_model, api_key=os.getenv("OPENAI_API_KEY", "").strip())
+                if sentiment not in ("Positive", "Negative", "Neutral"):
+                    sentiment = "Neutral"
+                insert_review(conn, outlet, movie, headline, sentiment)
+                added += 1
+            send_telegram_message(token, chat_id, f"Backfill complete for ‘{film}’: added {added}, scanned {checked} items.")
             continue
 
         # Pin canonical TMDb mapping
